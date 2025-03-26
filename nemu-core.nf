@@ -501,6 +501,7 @@ nmuts=`cat $obs_muts | wc -l`
 if [ \$nmuts -lt 2 ]; then
 	echo "ERROR: There are no reconstructed mutations after pipeline execution." >&2
 	echo "Unfortunately this gene cannot be processed authomatically on available data." >&2
+	exit 1
 fi
 
 calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \

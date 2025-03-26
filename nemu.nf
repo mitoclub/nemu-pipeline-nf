@@ -1,5 +1,29 @@
 NEMU_VERSION="1.0.3"
 
+params.help = null
+
+if (params.help)
+{
+	log.info "---------------------------------------------------------------------"
+	log.info "  NEMU pipeline v$NEMU_VERSION"
+    log.info "---------------------------------------------------------------------"
+    log.info "  USAGE:                                                "
+    log.info ""
+    log.info "nextflow run nemu-pipeline.nf [OPTIONS]"
+    log.info ""
+    log.info "Mandatory arguments:"
+    log.info "--sequence                      BAM FILE                    Aligned BAM file (between quotes for BAMs)"
+    log.info "--species_name                  STRING                  	  Species name ..."
+    log.info "--outdir	                      OUTPUT FOLDER               Output folder for spectra tables, images and intermediate files"
+    log.info "--gencode                     Integer                    Genetic code index. Default 1 (Standart code)"
+    log.info "--DB 			                  DB PATH               	  Path to nucleotide database to tblastn for"
+    log.info ""
+    log.info "Optional arguments:"
+    log.info "--gencode                     Integer                    Genetic code index. Default 1 (Standart code)"
+    exit 1
+}
+
+
 if (!params.sequence){
 	println "INPUT ERROR: Specify input nucleotide multifasta file"
 	exit 1
@@ -16,15 +40,7 @@ if (!params.DB){
 	println "INPUT ERROR: Specify nucleotide database"
 	exit 1
 }
-if (!params.iqtree_model){
-	println "INPUT ERROR: Specify substitution model 'iqtree_model'"
-	exit 1
-}
-if (!params.iqtree_anc_model){
-	println "INPUT ERROR: Specify substitution model 'iqtree_anc_model'"
-	exit 1
-}
-// if DB is NT, check that genus taxid specified
+// if DB is NT, check that genus taxid specified TODO delete this after authomatic genus id derivation
 if (params.DB.endsWith("nt")){
 	if (!params.genus_taxid){
 		println "INPUT ERROR: Specify genus taxid when run pipeline on NT database"
@@ -32,25 +48,40 @@ if (params.DB.endsWith("nt")){
 	}
 }
 
-if (!params.all){params.all = "false"}
-if (!params.syn4f){params.syn4f = "false"}
-if (!params.nonsyn){params.nonsyn = "false"}
-if (!params.run_shrinking){params.run_shrinking = "true"} 
-if (!params.quantile){params.quantile = "0.1"} 
-if (!params.verbose){params.verbose = "false"} 
-if (!params.internal){params.internal = "false"} 
-if (!params.terminal){params.terminal = "false"} 
-if (!params.branch_spectra){params.branch_spectra = "false"}
-if (!params.exclude_cons_sites){params.exclude_cons_sites = "false"}
-if (!params.use_probabilities){params.use_probabilities = "false"}
-if (!params.save_exp_mutations){params.save_exp_mutations = "false"}
-if (!params.uncertainty_coef){params.uncertainty_coef = "false"}
-if (!params.njobs){params.njobs = "1"}
-if (!params.required_nseqs){params.required_nseqs = 3}
+// Default parameters that can be substituted by config values or command line arguments
+params.required_nseqs = "3"
+params.max_target_seqs = "1000"
+params.msa_mode = "fast" // can be also "accurate"
+
+params.iqtree_model = "GTR+FO+G6+I"
+params.iqtree_anc_model = "GTR+FO+G6+I"
+
+params.run_shrinking = "true" 
+params.quantile = "0.1" 
+
+params.internal = "false" 
+params.terminal = "false" 
+params.branch_spectra = "false"
+
+params.use_probabilities = "true"
+params.proba_cutoff = "0.3"
+params.uncertainty_coef = "false"
+params.save_exp_mutations = "false"
+
+params.exclude_cons_sites = "false"
+params.cons_cat_cutoff = "1" 
+
+params.all = "true"
+params.syn4f = "false"
+params.nonsyn = "false"
+params.mnum192 = "16"
+
+params.verbose = null  // replace by quiet
+params.njobs = "4"
 THREADS = params.njobs
 
 // TODO add specific params logs
-if (params.verbose == 'true') {
+if (params.verbose) {
 	println ""
 	println "PARAMETERS:"
 	println "all: ${params.all}"
@@ -249,7 +280,7 @@ if [[ $DB == *nt ]]; then
 		echo "INFO: Checking required number of hits for outgroup" >&2
 		
 		if [ `cat blast_output_genus_filtered.tsv | wc -l` -eq 0 ]; then
-			echo "ERROR: there are no hits in the database that could be used as outgroup." >&2
+			echo "WARNING: there are no hits in the database that could be used as outgroup." >&2
 			# echo "Unfortunately pipeline cannot analyse this species using nt databse." >&2
 			# exit 1
 			NO_OUTGRP_MODE=1
@@ -267,11 +298,11 @@ if [[ $DB == *nt ]]; then
 	fi
 
 	echo "INFO: Sequences headers encoding" >&2
-	if [ $NO_OUTGRP_MODE ]; then
-		echo "INFO: preparing sequences without outgroup" >&2
-		multifasta_coding.py -a species_sequences.fasta -o sampled_sequences.fasta -m encoded_headers.txt
+	if [ \$NO_OUTGRP_MODE ]; then
+		echo "INFO: Preparing sequences without outgroup" >&2
+		multifasta_coding.py -a species_sequences.fasta -g "string that cannot be outgroup" -o sampled_sequences.fasta -m encoded_headers.txt
 	else
-		echo "INFO: preparing sequences with outgroup" >&2
+		echo "INFO: Preparing sequences with outgroup" >&2
 		ohead=`head -n 1 outgroup_sequence.fasta`
 		cat outgroup_sequence.fasta species_sequences.fasta > merged.fasta
 		multifasta_coding.py -a merged.fasta -g "\${ohead:1}" -o sampled_sequences.fasta -m encoded_headers.txt
@@ -385,7 +416,8 @@ output:
  file "*.csv" optional true
 
 """
-if [[ $DB == *nt ]]; then
+if [[ $params.msa_mode = "accurate" ]]; then
+
 	mafft --thread $THREADS $seqs > seqM.fa
 	sed '/^>/!s/[actg]/\\U&/g' seqM.fa > seqMU.fa
 	goalign clean seqs -c 0.3 -i seqMU.fa -o seqMC.fa
@@ -405,7 +437,10 @@ if [[ $DB == *nt ]]; then
 	seqkit rmdup -s < seq_dd_NT_FS_clean.fa > msa_nuc_lower.fasta
 	sed '/^>/!s/[actg]/\\U&/g' msa_nuc_lower.fasta > msa_nuc.fasta
 
-else
+elif [[ $params.msa_mode = "fast" ]]; then
+
+	# TODO improve according to recomentations of macse team https://www.agap-ge2pop.org/reportgapsaa2nt/
+
 	# NT2AA
 	java -jar /opt/macse_v2.07.jar -prog translateNT2AA -seq $seqs \
 		-gc_def $gencode -out_AA translated.faa
@@ -583,7 +618,7 @@ output:
 """
 nw_distance -m p -s f -n $tree | sort -grk 2 1> branches.txt
 
-if [ `grep -c OUTGRP branches.txt` -eq 1 ] && [ `echo "$(grep OUTGRP branches.txt | cut -f 2)==0" | bc -l` -eq 1 ]; then
+if [ `grep -c OUTGRP branches.txt` -eq 1 ] && [ `echo "\$(grep OUTGRP branches.txt | cut -f 2)==0" | bc -l` -eq 1 ]; then
 	cat "branches.txt"  >&2
 	echo "Something went wrong: outgroup is not furthest leaf in the tree" >&2
 	exit 1
@@ -728,6 +763,7 @@ nmuts=`cat $obs_muts | wc -l`
 if [ \$nmuts -lt 2 ]; then
 	echo "ERROR: There are no reconstructed mutations after pipeline execution." >&2
 	echo "Unfortunately this gene cannot be processed authomatically on available data." >&2
+	exit 1
 fi
 
 calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
@@ -759,7 +795,7 @@ fi
 }
 
 
-if (params.verbose == 'true') {
+if (params.verbose) {
 	workflow.onComplete {
 	println "##Completed at: ${workflow.complete}; Duration: ${workflow.duration}; Success: ${workflow.success ? 'OK' : 'failed' }"
 	}
