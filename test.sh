@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Custom sequences
-seq_nucs=../example_data/CO1__Stenella_longirostris.fna
-if [ -f nemu-core.nf ] && [ -f test-core.config ] && [ -f $seq_nucs ]; then
-    nextflow -c test-core.config run -resume nemu-core.nf --sequence $seq_nucs --outdir test_output1
-else
-    echo you must be in the pipeline directory to access nemu-core.nf and test-core.config files
-    exit 1
-fi
+# # Custom sequences
+# seq_nucs=../example_data/CO1__Stenella_longirostris.fna
+# if [ -f nemu-core.nf ] && [ -f test-core.config ] && [ -f $seq_nucs ]; then
+#     nextflow -c test-core.config run -resume nemu-core.nf --sequence $seq_nucs --outdir test_output1
+# else
+#     echo you must be in the pipeline directory to access nemu-core.nf and test-core.config files
+#     exit 1
+# fi
 
 # # MIDORI2 database
 # seq_protein=../example_data/CYTB__Stenella_longirostris.faa
@@ -40,5 +40,9 @@ fi
 #     echo you must be in the pipeline directory to access nemu.nf and test.config files
 #     exit 1
 # fi
+
+cd test_virus
+nextflow -c nextflow.config run ../nemu.nf --outdir . --max_target_seqs 100 
+cd -
 
 echo DONE

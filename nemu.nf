@@ -1,3 +1,29 @@
+NEMU_VERSION="1.0.3"
+
+params.help = null
+
+if (params.help)
+{
+	log.info "---------------------------------------------------------------------"
+	log.info "  NEMU pipeline v$NEMU_VERSION"
+    log.info "---------------------------------------------------------------------"
+    log.info "  USAGE:                                                "
+    log.info ""
+    log.info "nextflow run nemu-pipeline.nf [OPTIONS]"
+    log.info ""
+    log.info "Mandatory arguments:"
+    log.info "--sequence                      BAM FILE                    Aligned BAM file (between quotes for BAMs)"
+    log.info "--species_name                  STRING                  	  Species name ..."
+    log.info "--outdir	                      OUTPUT FOLDER               Output folder for spectra tables, images and intermediate files"
+    log.info "--gencode                     Integer                    Genetic code index. Default 1 (Standart code)"
+    log.info "--DB 			                  DB PATH               	  Path to nucleotide database to tblastn for"
+    log.info ""
+    log.info "Optional arguments:"
+    log.info "--gencode                     Integer                    Genetic code index. Default 1 (Standart code)"
+    exit 1
+}
+
+
 if (!params.sequence){
 	println "INPUT ERROR: Specify input nucleotide multifasta file"
 	exit 1
@@ -14,15 +40,7 @@ if (!params.DB){
 	println "INPUT ERROR: Specify nucleotide database"
 	exit 1
 }
-if (!params.iqtree_model){
-	println "INPUT ERROR: Specify substitution model 'iqtree_model'"
-	exit 1
-}
-if (!params.iqtree_anc_model){
-	println "INPUT ERROR: Specify substitution model 'iqtree_anc_model'"
-	exit 1
-}
-// if DB is NT, check that genus taxid specified
+// if DB is NT, check that genus taxid specified TODO delete this after authomatic genus id derivation
 if (params.DB.endsWith("nt")){
 	if (!params.genus_taxid){
 		println "INPUT ERROR: Specify genus taxid when run pipeline on NT database"
@@ -30,25 +48,40 @@ if (params.DB.endsWith("nt")){
 	}
 }
 
-if (!params.all){params.all = "false"}
-if (!params.syn4f){params.syn4f = "false"}
-if (!params.nonsyn){params.nonsyn = "false"}
-if (!params.run_shrinking){params.run_shrinking = "true"} 
-if (!params.quantile){params.quantile = "0.1"} 
-if (!params.verbose){params.verbose = "false"} 
-if (!params.internal){params.internal = "false"} 
-if (!params.terminal){params.terminal = "false"} 
-if (!params.branch_spectra){params.branch_spectra = "false"}
-if (!params.exclude_cons_sites){params.exclude_cons_sites = "false"}
-if (!params.use_probabilities){params.use_probabilities = "false"}
-if (!params.save_exp_mutations){params.save_exp_mutations = "false"}
-if (!params.uncertainty_coef){params.uncertainty_coef = "false"}
-if (!params.njobs){params.njobs = "1"}
-if (!params.required_nseqs){params.required_nseqs = 3}
+// Default parameters that can be substituted by config values or command line arguments
+params.required_nseqs = "3"
+params.max_target_seqs = "500"
+params.msa_mode = "fast" // can be also "accurate"
+
+params.iqtree_model = "GTR+FO+G6+I"
+params.iqtree_anc_model = "GTR+FO+G6+I"
+
+params.run_shrinking = "true" 
+params.quantile = "0.1" 
+
+params.internal = "false" 
+params.terminal = "false" 
+params.branch_spectra = "false"
+
+params.use_probabilities = "true"
+params.proba_cutoff = "0.3"
+params.uncertainty_coef = "false"
+params.save_exp_mutations = "false"
+
+params.exclude_cons_sites = "false"
+params.cons_cat_cutoff = "1" 
+
+params.all = "true"
+params.syn4f = "false"
+params.nonsyn = "false"
+params.mnum192 = "16"
+
+params.verbose = null  // replace by quiet
+params.njobs = "4"
 THREADS = params.njobs
 
 // TODO add specific params logs
-if (params.verbose == 'true') {
+if (params.verbose) {
 	println ""
 	println "PARAMETERS:"
 	println "all: ${params.all}"
@@ -124,7 +157,7 @@ mv $query query_single.fasta
 
 
 NSEQS_LIMIT=33000
-max_target_seqs = 1000
+max_target_seqs = params.max_target_seqs
 
 process tblastn_and_seqs_extraction {
 
@@ -192,15 +225,6 @@ if [[ $DB == *nt ]]; then
 
 	grep -v -f species.taxids genus.taxids > relatives.taxids
 
-	echo "INFO: Checking number of taxids for outgroup" >&2
-	if [ `cat relatives.taxids | wc -l` -eq 0 ]; then
-		echo "ERROR: there are no taxids that can be used as outgroup." >&2
-		echo "Maybe this species is single in the family, so pipeline can build incorrect phylogeneti tree" >&2
-		echo "due to potential incorrect tree rooting. You can select sequences and outgroup manually and" >&2
-		echo "run pipeline on your nucleotide sequences" >&2
-		exit 1
-	fi
-
 	echo "INFO: Blasting species sequences in the nt" >&2
 	tblastn -db $DB -db_gencode $gencode -max_target_seqs $max_target_seqs \
 			-query $query -out blast_output_species.tsv -evalue 0.00001 \
@@ -224,55 +248,75 @@ if [[ $DB == *nt ]]; then
 	awk '\$2 > \$3 {print \$1, \$3 "-" \$2, \$4}' raw_coords.txt > coords.txt
 	awk '\$3 > \$2 {print \$1, \$2 "-" \$3, \$4}' raw_coords.txt >> coords.txt
 
-	echo "INFO: Getting nucleotide sequences" >&2
-	blastdbcmd -db $DB -entry_batch coords.txt -outfmt %f -out nucleotide_sequences.fasta
+	echo "INFO: Getting species nucleotide sequences" >&2
+	blastdbcmd -db $DB -entry_batch coords.txt -outfmt %f -out species_sequences.fasta
 
 	echo "INFO: Checking required number of extracted seqs" >&2
-	nseqs=`grep -c '>' nucleotide_sequences.fasta`
+	nseqs=`grep -c '>' species_sequences.fasta`
 	if [ \$nseqs -lt $params.required_nseqs ]; then
 		echo "ERROR: cannot extract more than \$nseqs seqs from the database for given query, but needed at least ${params.required_nseqs}" >&2
 		exit 1
 	fi
 
-	echo -e "INFO: Blasting for outgroup search" >&2
-	tblastn -db $DB -db_gencode $gencode -max_target_seqs 10 \
-			-query $query -out blast_output_genus.tsv -evalue 0.00001 \
-			-num_threads $THREADS -taxidlist relatives.taxids \
-			-outfmt "\$outfmt"
-	
-	echo "INFO: Filtering out bad hits: ident <= 70, query coverage <= 0.5" >&2
-	awk '\$2 > 70 && \$3 / \$4 > 0.5' blast_output_genus.tsv | sort -rk 9 > blast_output_genus_filtered.tsv
+	NO_OUTGRP_MODE=
+	echo "INFO: Checking number of taxids for outgroup" >&2
+	if [ `cat relatives.taxids | wc -l` -eq 0 ]; then
+		echo "WARNING: there are no taxids that can be used as outgroup." >&2
+		echo "Maybe this species is single in the family, so pipeline can build incorrect phylogeneti tree" >&2
+		# echo "due to potential incorrect tree rooting. You can select sequences and outgroup manually and" >&2
+		# echo "run pipeline on your nucleotide sequences" >&2
+		# exit 1
+		NO_OUTGRP_MODE=1
+	else
+		echo -e "INFO: Blasting for outgroup search" >&2
+		tblastn -db $DB -db_gencode $gencode -max_target_seqs 10 \
+				-query $query -out blast_output_genus.tsv -evalue 0.00001 \
+				-num_threads $THREADS -taxidlist relatives.taxids \
+				-outfmt "\$outfmt"
+		
+		echo "INFO: Filtering out bad hits: ident <= 70, query coverage <= 0.5" >&2
+		awk '\$2 > 70 && \$3 / \$4 > 0.5' blast_output_genus.tsv | sort -rk 9 > blast_output_genus_filtered.tsv
 
-	echo "INFO: Checking required number of hits for outgroup" >&2
-	if [ `cat blast_output_genus_filtered.tsv | wc -l` -eq 0 ]; then
-		echo "ERROR: there are no hits in the database that could be used as outgroup." >&2
-		echo "Unfortunately pipeline cannot analyse this species using nt databse." >&2
-		exit 1
+		echo "INFO: Checking required number of hits for outgroup" >&2
+		
+		if [ `cat blast_output_genus_filtered.tsv | wc -l` -eq 0 ]; then
+			echo "WARNING: there are no hits in the database that could be used as outgroup." >&2
+			# echo "Unfortunately pipeline cannot analyse this species using nt databse." >&2
+			# exit 1
+			NO_OUTGRP_MODE=1
+		else
+			echo "INFO: Preparing outgroup coords for nucleotide sequences extraction" >&2
+			# entry|range|strand, e.g. ID09 x-y minus
+			head -n 1 blast_output_genus_filtered.tsv | awk '{print \$1, \$6, \$7, (\$NF ~ /^-/) ? "minus" : "plus"}' > raw_coords_genus.txt
+			awk '\$2 > \$3 {print \$1, \$3 "-" \$2, \$4}' raw_coords_genus.txt >  coords_genus.txt
+			awk '\$3 > \$2 {print \$1, \$2 "-" \$3, \$4}' raw_coords_genus.txt >> coords_genus.txt
+
+			echo "INFO: Getting nucleotide sequences of potential outgroups" >&2
+			blastdbcmd -db $DB -entry_batch coords_genus.txt -outfmt %f -out outgroup_sequence.fasta
+		fi
+	
 	fi
 
-	echo "INFO: Preparing outgroup coords for nucleotide sequences extraction" >&2
-	# entry|range|strand, e.g. ID09 x-y minus
-	head -n 1 blast_output_genus_filtered.tsv | awk '{print \$1, \$6, \$7, (\$NF ~ /^-/) ? "minus" : "plus"}' > raw_coords_genus.txt
-	awk '\$2 > \$3 {print \$1, \$3 "-" \$2, \$4}' raw_coords_genus.txt >  coords_genus.txt
-	awk '\$3 > \$2 {print \$1, \$2 "-" \$3, \$4}' raw_coords_genus.txt >> coords_genus.txt
-
-	echo "INFO: Getting nucleotide sequences of potential outgroups" >&2
-	blastdbcmd -db $DB -entry_batch coords_genus.txt -outfmt %f -out outgroup_sequence.fasta
-	
 	echo "INFO: Sequences headers encoding" >&2
-	ohead=`head -n 1 outgroup_sequence.fasta`
-	cat outgroup_sequence.fasta nucleotide_sequences.fasta > sample.fasta
-	multifasta_coding.py -a sample.fasta -g "\${ohead:1}" -o sampled_sequences.fasta -m encoded_headers.txt
-
+	if [ \$NO_OUTGRP_MODE ]; then
+		echo "INFO: Preparing sequences without outgroup" >&2
+		multifasta_coding.py -a species_sequences.fasta -g "string that cannot be outgroup" -o sampled_sequences.fasta -m encoded_headers.txt
+	else
+		echo "INFO: Preparing sequences with outgroup" >&2
+		ohead=`head -n 1 outgroup_sequence.fasta`
+		cat outgroup_sequence.fasta species_sequences.fasta > merged.fasta
+		multifasta_coding.py -a merged.fasta -g "\${ohead:1}" -o sampled_sequences.fasta -m encoded_headers.txt
+	fi
 else
 	report=report.blast
 	nseqs=$max_target_seqs
 
 	while true
 	do   
-		echo "INFO: Blasting in midori2 database; max_target_seqs=\$nseqs" >&2
-		tblastn -db $DB -db_gencode $gencode -num_descriptions \$nseqs -num_alignments \$nseqs \
-				-query $query -out \$report -num_threads $THREADS
+		echo "INFO: Blasting in the midori2 database; max_target_seqs=\$nseqs" >&2
+		tblastn -db $DB -db_gencode $gencode \
+			-num_descriptions \$nseqs -num_alignments \$nseqs \
+			-query $query -out \$report -num_threads $THREADS
 		
 		if [ `grep -c "No hits found" \$report` -eq 0 ]; then 
 			echo "INFO: some hits found in the database for given query" >&2
@@ -340,12 +384,6 @@ if [ \$nseqs -lt $params.required_nseqs ]; then
 	exit 1
 fi
 
-if [ `grep -E -c ">OUTGRP" $query` -ne 1 ]; then
-	echo "Unexpected error. Cannot find outgroup header in the alignment." >&2
-	echo "Probably outgroup sequence for this gene cannot be found in the database." >&2
-	exit 1
-fi
-
 grep -v  ">" $query | grep -o . | sort | uniq -c | sort -nr > char_numbers.log
 if [ `head -n 5 char_numbers.log | grep -Ec "[ACGTacgt]"` -ge 3 ] && [ `grep -Ec "[EFILPQU]" char_numbers.log` -eq 0 ]; then
 	echo "All right" >&2
@@ -379,7 +417,8 @@ output:
  file "*.csv" optional true
 
 """
-if [[ $DB == *nt ]]; then
+if [[ $params.msa_mode = "accurate" ]]; then
+
 	mafft --thread $THREADS $seqs > seqM.fa
 	sed '/^>/!s/[actg]/\\U&/g' seqM.fa > seqMU.fa
 	goalign clean seqs -c 0.3 -i seqMU.fa -o seqMC.fa
@@ -399,7 +438,10 @@ if [[ $DB == *nt ]]; then
 	seqkit rmdup -s < seq_dd_NT_FS_clean.fa > msa_nuc_lower.fasta
 	sed '/^>/!s/[actg]/\\U&/g' msa_nuc_lower.fasta > msa_nuc.fasta
 
-else
+elif [[ $params.msa_mode = "fast" ]]; then
+
+	# TODO improve according to recomentations of macse team https://www.agap-ge2pop.org/reportgapsaa2nt/
+
 	# NT2AA
 	java -jar /opt/macse_v2.07.jar -prog translateNT2AA -seq $seqs \
 		-gc_def $gencode -out_AA translated.faa
@@ -572,13 +614,13 @@ input:
  set val(name), file(tree) from g_315_tree_g_132
 
 output:
- set val(name), file("branches.txt")  into g_132_branches
+ set val(name), file("branches.txt")
 
 """
 nw_distance -m p -s f -n $tree | sort -grk 2 1> branches.txt
 
-if [ `grep OUTGRP branches.txt | cut -f 2 | python3 -c "import sys; print(float(sys.stdin.readline().strip()) > 0)"` = False ]; then
-	cat "branches.txt"
+if [ `grep -c OUTGRP branches.txt` -eq 1 ] && [ `echo "\$(grep OUTGRP branches.txt | cut -f 2)==0" | bc -l` -eq 1 ]; then
+	cat "branches.txt"  >&2
 	echo "Something went wrong: outgroup is not furthest leaf in the tree" >&2
 	exit 1
 fi
@@ -595,7 +637,13 @@ output:
  set val("${name}_rooted"), file("*.nwk")  into g_302_tree_g_326
 
 """
-nw_reroot -l $tree OUTGRP 1>${name}_rooted.nwk
+if [ `grep -c OUTGRP $tree` -eq 1 ]; then
+	nw_reroot -l $tree OUTGRP 1>${name}_rooted.nwk
+	echo "INFO: The tree is rerooted using OUTGRP" >&2
+else
+	nw_reroot $tree 1>${name}_rooted.nwk
+	echo "INFO: The tree is rerooted on the longest branch" >&2
+fi
 """
 }
 
@@ -633,10 +681,18 @@ iqtree2 -te $tree -s msa_filtered.fasta -m $params.iqtree_anc_model -asr -nt $TH
 if [ ! -f anc.rate ]; then
 	touch anc.rate
 fi
+
 mv anc.rate rates.tsv
 mv anc.iqtree iqtree_anc_report.log
 mv anc.log iqtree_anc.log
-nw_reroot anc.treefile OUTGRP | sed 's/;/ROOT;/' > final_tree.nwk
+
+if [ `grep -c OUTGRP anc.treefile` -eq 1 ]; then
+	nw_reroot -l anc.treefile OUTGRP | sed 's/;/ROOT;/' > final_tree.nwk
+	echo "INFO: The tree (after ASR) is rerooted using OUTGRP" >&2
+else
+	nw_reroot anc.treefile | sed 's/;/ROOT;/' > final_tree.nwk
+	echo "INFO: The tree (after ASR) is rerooted on the longest branch" >&2
+fi
 
 iqtree_states_add_part.py anc.state iqtree_anc.state
 """
@@ -708,6 +764,7 @@ nmuts=`cat $obs_muts | wc -l`
 if [ \$nmuts -lt 2 ]; then
 	echo "ERROR: There are no reconstructed mutations after pipeline execution." >&2
 	echo "Unfortunately this gene cannot be processed authomatically on available data." >&2
+	exit 1
 fi
 
 calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
@@ -739,7 +796,7 @@ fi
 }
 
 
-if (params.verbose == 'true') {
+if (params.verbose) {
 	workflow.onComplete {
 	println "##Completed at: ${workflow.complete}; Duration: ${workflow.duration}; Success: ${workflow.success ? 'OK' : 'failed' }"
 	}

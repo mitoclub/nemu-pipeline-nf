@@ -1,0 +1,4 @@
+*.sif
+work
+test_output*
+.nextflow*
