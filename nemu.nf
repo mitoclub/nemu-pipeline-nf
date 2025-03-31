@@ -50,7 +50,7 @@ if (params.DB.endsWith("nt")){
 
 // Default parameters that can be substituted by config values or command line arguments
 params.required_nseqs = "3"
-params.max_target_seqs = "1000"
+params.max_target_seqs = "500"
 params.msa_mode = "fast" // can be also "accurate"
 
 params.iqtree_model = "GTR+FO+G6+I"
@@ -157,7 +157,7 @@ mv $query query_single.fasta
 
 
 NSEQS_LIMIT=33000
-max_target_seqs = 1000
+max_target_seqs = params.max_target_seqs
 
 process tblastn_and_seqs_extraction {
 
@@ -313,9 +313,10 @@ else
 
 	while true
 	do   
-		echo "INFO: Blasting in midori2 database; max_target_seqs=\$nseqs" >&2
-		tblastn -db $DB -db_gencode $gencode -num_descriptions \$nseqs -num_alignments \$nseqs \
-				-query $query -out \$report -num_threads $THREADS
+		echo "INFO: Blasting in the midori2 database; max_target_seqs=\$nseqs" >&2
+		tblastn -db $DB -db_gencode $gencode \
+			-num_descriptions \$nseqs -num_alignments \$nseqs \
+			-query $query -out \$report -num_threads $THREADS
 		
 		if [ `grep -c "No hits found" \$report` -eq 0 ]; then 
 			echo "INFO: some hits found in the database for given query" >&2

@@ -42,7 +42,7 @@
 # fi
 
 cd test_virus
-nextflow -c nextflow.config run ../nemu.nf --outdir .
+nextflow -c nextflow.config run ../nemu.nf --outdir . --max_target_seqs 100 
 cd -
 
 echo DONE
