@@ -210,9 +210,13 @@ if [[ $DB == *nt ]]; then
 		echo "Internal server error during fetching of species taxa information. Try again later" >&2
 		exit 1
 	fi
-	if [[ `grep "rank : species" sp_tax.info` ]]; then 
+	
+	if [[ `grep -e "rank : species" -e "rank : isolate" sp_tax.info` ]]; then 
 		raw_sp_taxid=`grep Taxid sp_tax.info`
 		species_taxid="\${raw_sp_taxid#*Taxid : }"
+	else
+		echo "Cannot find species taxon id. Try to use another species name/taxid."  >&2
+		exit 1
 	fi
 	sleep 1
 
