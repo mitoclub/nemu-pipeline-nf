@@ -97,7 +97,30 @@ params.proba_arg = params.use_probabilities == "true" ? "--proba" : ""
 
 Channel.value(params.DB).into{g_15_commondb_path_g_406;g_15_commondb_path_g_444}
 Channel.value(params.genus_taxid).set{genus_taxid_value}
-query_protein_sequence = file(params.sequence, type: 'any') 
+
+# Support multiple query sequences for test pipeline: split multifasta into single-sequence files
+Channel.fromPath(params.sequence).set{input_multifasta}
+
+process split_queries_test {
+
+	publishDir false
+
+	input:
+	file multi from input_multifasta
+
+	output:
+	file "query_*.fasta" into query_protein_sequence
+
+	script:
+	"""
+	awk '/^>/{if (out) close(out); out=sprintf("query_%03d.fasta", ++i); print > out; next} { if(out) print > out }' $multi
+	for f in query_*.fasta; do
+		if [ `grep -c ">" "$f"` -eq 0 ]; then
+			rm -f "$f"
+		fi
+	done
+	"""
+}
 Channel.value(params.gencode).into{g_220_gencode_g_406;g_396_gencode_g_410;g_396_gencode_g_411;g_396_gencode_g_422;g_396_gencode_g_423;g_396_gencode_g_433}
 Channel.value(params.species_name).set{g_1_species_name_g_415}
 
