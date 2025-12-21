@@ -12,11 +12,11 @@
  */
 
 // Global parameters
-params.input        = "$projectDir/data/sample_proteins.fasta"
+params.input        = "data/proteins.fa"
 params.outdir       = "results"
-params.db           = "$projectDir/blast_db/pdb_seqres" 
-params.taxdump      = "$projectDir/blast_db/taxdump" // Directory containing nodes.dmp and names.dmp
-params.species_name = null 
+params.db           = "/home/kpotoh/.nuc_db/dolphin_db"  // Path to BLAST database
+params.taxdump      = "/home/kpotoh/.taxonkit" // Directory containing nodes.dmp and names.dmp
+params.species_name = false  // Optional: Provide species name directly
 
 log.info """\
     P R O T E I N   P I P E L I N E
@@ -29,14 +29,11 @@ log.info """\
     """
     .stripIndent()
 
-/*
- * PROCESS: Parse Species Name
- */
 process PARSE_SPECIES_NAME {
     tag "$id"
 
     input:
-    tuple val(id), val(full_header), val(sequence)
+    tuple val(id), val(header), val(sequence)
     val global_species
 
     output:
@@ -49,20 +46,20 @@ process PARSE_SPECIES_NAME {
     import sys
 
     g_spec = "${global_species}"
-    if g_spec and g_spec != "null":
+    if g_spec and g_spec != "false":
         print(g_spec, end='')
         sys.exit(0)
 
-    header = "${full_header}"
+    header = "${header}"
     species = "unknown_species"
 
     m_os = re.search(r'OS=([a-zA-Z0-9_ ]+)', header)
     if m_os:
-        species = m_os.group(1).strip().replace(' ', '_')
+        species = m_os.group(1).strip()
     else:
-        m_br = re.search(r'\[([a-zA-Z0-9_ ]+)\]', header)
+        m_br = re.search(r'\\[([a-zA-Z0-9_ ]+)\\]', header)
         if m_br:
-            species = m_br.group(1).strip().replace(' ', '_')
+            species = m_br.group(1).strip()
     
     print(species, end='')
     """
@@ -187,9 +184,11 @@ process TBLASTN {
 }
 
 workflow {
+    def seq_counter = 0
+
     // 1. Prepare Channels
     raw_sequences = Channel.fromPath(params.input)
-        .splitFasta(record: [id: true, seqString: true])
+        .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
             // Simple validation
             def seq = record.seqString.toUpperCase()
@@ -199,8 +198,10 @@ workflow {
             return true
         }
         .map { record ->
-            def clean_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9]/, '_')
-            [clean_id, record.id, record.seqString]
+            def count = ++seq_counter
+            def clean_original_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9\.]/, '_')            
+            def unique_id = "${count}__${clean_original_id}"
+            [unique_id, record.header, record.seqString]
         }
 
     // 2. Parse Species Name
