@@ -3,7 +3,7 @@
 /*
  * Pipeline: Protein Sequence Analysis
  * Steps:
- * 1. Split Multi-FASTA
+ * 1. Split Multi-FASTA & Assign Unique IDs
  * 2. Validate Protein sequences
  * 3. Parse Species Name
  * 4. Prepare Taxonomy (TaxonKit: Species & Relatives)
@@ -17,6 +17,8 @@ params.outdir       = "results"
 params.db           = "/home/kpotoh/.nuc_db/dolphin_db"  // Path to BLAST database
 params.taxdump      = "/home/kpotoh/.taxonkit" // Directory containing nodes.dmp and names.dmp
 params.species_name = false  // Optional: Provide species name directly
+params.gencode      = 2      // Genetic code for translation
+params.max_target_seqs = 1000  // Max target sequences for BLAST
 
 log.info """\
     P R O T E I N   P I P E L I N E
@@ -29,6 +31,10 @@ log.info """\
     """
     .stripIndent()
 
+/*
+ * PROCESS: Parse Species Name
+ * Uses input header to determine species.
+ */
 process PARSE_SPECIES_NAME {
     tag "$id"
 
@@ -46,17 +52,20 @@ process PARSE_SPECIES_NAME {
     import sys
 
     g_spec = "${global_species}"
-    if g_spec and g_spec != "false":
+    if g_spec and g_spec != "false" and g_spec != "":
         print(g_spec, end='')
         sys.exit(0)
 
     header = "${header}"
     species = "unknown_species"
 
+    # Try Uniprot style: OS=Homo sapiens
     m_os = re.search(r'OS=([a-zA-Z0-9_ ]+)', header)
     if m_os:
         species = m_os.group(1).strip()
     else:
+        # Try NCBI style: [Homo sapiens]
+        # Double backslashes are needed for Groovy string interpolation
         m_br = re.search(r'\\[([a-zA-Z0-9_ ]+)\\]', header)
         if m_br:
             species = m_br.group(1).strip()
@@ -82,44 +91,34 @@ process PREPARE_TAXONOMY {
 
     script:
     """
-    # Configure taxonkit to use the provided dump files
     export TAXONKIT_DB=${taxdump_dir}
 
-    # Clean species name (replace underscores with spaces for taxonkit lookup if needed)
-    # Most taxonkit lookups work better with spaces: "Homo_sapiens" -> "Homo sapiens"
+    # Clean species name (ensure spaces for taxonkit)
     CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
 
     echo "Deriving TaxIDs for: \$CLEAN_NAME"
 
-    # 1. Get TaxID for the Species
-    # name2taxid returns: "Name <tab> TaxID"
+    # 1. Get TaxID
     SPEC_ID=\$(echo "\$CLEAN_NAME" | taxonkit name2taxid | cut -f2)
 
     if [ -z "\$SPEC_ID" ]; then
         echo "WARNING: TaxID not found for \$CLEAN_NAME"
         touch species.taxid relatives.taxid
     else
-        # 2. Get all downstream TaxIDs for this Species (Subspecies, strains)
-        # This file is used to restrict TBLASTN search
-        taxonkit list --ids \$SPEC_ID --indent "" > species.taxid
+        # 2. Get downstream TaxIDs
+        taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
 
-        # 3. Find the Family ID to determine relatives
-        # reformat -F -f "{k}\t{t}" outputs rank and taxid for the lineage
-        FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -F -f "{k}\t{t}" | grep -P "^family\t" | cut -f2)
+        # 3. Find Family ID
+        FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
 
         if [ -z "\$FAMILY_ID" ]; then
-            echo "WARNING: Family rank not found for \$CLEAN_NAME (ID: \$SPEC_ID)"
+            echo "WARNING: Family rank not found for \$CLEAN_NAME"
             touch relatives.taxid
         else
-            # 4. Get all members of the Family
-            taxonkit list --ids \$FAMILY_ID --indent "" > family_all.taxid
-            
-            # 5. Exclude the Species IDs from the Family IDs to get strictly relatives (Outgroup candidates)
-            # grep -vFf uses species.taxid as a pattern file to exclude lines from family_all.taxid
+            # 4. Get Family members and exclude self to find relatives
+            taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
             grep -vFf species.taxid family_all.taxid > relatives.taxid
-            
-            # Cleanup temp file
-            rm family_all.taxid
+            # rm family_all.taxid
         fi
     fi
     """
@@ -148,49 +147,49 @@ process SAVE_QUERY {
 
 /*
  * PROCESS: TBLASTN
- * Uses -taxidlist to speed up search if the list is available.
+ * Uses available CPUs to speed up search.
  */
 process TBLASTN {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
+    
+    // Default to 4 CPUs per BLAST task. 
+    // Nextflow will run as many tasks in parallel as your machine permits (Total CPUs / 4).
+    cpus 4 
 
     input:
     tuple val(id), path(query), path(species_txt), path(species_taxid_list), path(relatives_taxid_list)
     val db_path
 
     output:
-    path "blast_result.txt"
+    path "blast_output_species.tsv"
 
     script:
     """
-    # Check if DB exists
-    if ! ls ${db_path}* 1> /dev/null 2>&1; then
-        echo "WARNING: BLAST DB not found" > blast_result.txt
-        exit 0
-    fi
+    outfmt="6 saccver pident length qlen gapopen sstart send evalue bitscore sframe staxids"
 
-    ARGS="-query ${query} -db ${db_path} -outfmt 6"
-
-    # If species.taxid exists and is not empty, use it to restrict search
+    ARGS=""
     if [ -s "${species_taxid_list}" ]; then
-        ARGS="\$ARGS -taxidlist ${species_taxid_list}"
-        echo "Running TBLASTN with taxid restriction..."
-    else
-        echo "Running TBLASTN without taxid restriction (list empty or missing)..."
+        ARGS="-taxidlist ${species_taxid_list}"
+        echo "Running with taxid restriction..."
     fi
 
-    tblastn \$ARGS -out blast_result.txt
+	tblastn -query ${query} -db ${db_path} -db_gencode ${params.gencode} \
+        -max_target_seqs ${params.max_target_seqs} \
+		-evalue 0.00001 -num_threads ${task.cpus} \$ARGS \
+		-outfmt "\$outfmt" -out blast_output_species.tsv
     """
 }
 
 workflow {
+    // Initialize a counter for unique IDs
     def seq_counter = 0
 
     // 1. Prepare Channels
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
-            // Simple validation
+            // Validation Logic
             def seq = record.seqString.toUpperCase()
             if (seq =~ /[EFILPQZ]/) return true
             def dna_count = seq.count('A') + seq.count('C') + seq.count('G') + seq.count('T') + seq.count('N')
@@ -198,6 +197,7 @@ workflow {
             return true
         }
         .map { record ->
+            // Increment counter for every sequence passed
             def count = ++seq_counter
             def clean_original_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9\.]/, '_')            
             def unique_id = "${count}__${clean_original_id}"
@@ -207,7 +207,7 @@ workflow {
     // 2. Parse Species Name
     PARSE_SPECIES_NAME(raw_sequences, params.species_name)
 
-    // 3. Prepare Taxonomy (Generates taxid lists)
+    // 3. Prepare Taxonomy
     PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
 
     // 4. Save Query Files
