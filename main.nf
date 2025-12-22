@@ -7,18 +7,17 @@
  * 2. Validate Protein sequences
  * 3. Parse Species Name
  * 4. Prepare Taxonomy (TaxonKit: Species & Relatives)
- * 5. Save Query & Metadata
- * 6. Run TBLASTN (Restricted by TaxID)
+ * 5. TBLASTN & Filter (Single optimized step)
  */
 
 // Global parameters
 params.input        = "data/proteins.fa"
 params.outdir       = "results"
-params.db           = "/home/kpotoh/.nuc_db/dolphin_db"  // Path to BLAST database
-params.taxdump      = "/home/kpotoh/.taxonkit" // Directory containing nodes.dmp and names.dmp
-params.species_name = false  // Optional: Provide species name directly
-params.gencode      = 2      // Genetic code for translation
-params.max_target_seqs = 1000  // Max target sequences for BLAST
+params.db           = "/home/kpotoh/.nuc_db/dolphin"
+params.taxdump      = "/home/kpotoh/.taxonkit" 
+params.species_name = false  
+params.gencode      = 2      
+params.max_target_seqs = 2000 // Increased to ensure we capture enough hits for both species and outgroup
 
 log.info """\
     P R O T E I N   P I P E L I N E
@@ -26,18 +25,11 @@ log.info """\
     input file   : ${params.input}
     outdir       : ${params.outdir}
     blast db     : ${params.db}
-    taxdump dir  : ${params.taxdump}
-    species_name : ${params.species_name ?: 'Auto-detect from headers'}
     """
     .stripIndent()
 
-/*
- * PROCESS: Parse Species Name
- * Uses input header to determine species.
- */
 process PARSE_SPECIES_NAME {
     tag "$id"
-
     input:
     tuple val(id), val(header), val(sequence)
     val global_species
@@ -74,10 +66,6 @@ process PARSE_SPECIES_NAME {
     """
 }
 
-/*
- * PROCESS: Prepare Taxonomy
- * Uses taxonkit to derive TaxIDs for the species and its relatives.
- */
 process PREPARE_TAXONOMY {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
@@ -92,14 +80,15 @@ process PREPARE_TAXONOMY {
     script:
     """
     export TAXONKIT_DB=${taxdump_dir}
-
-    # Clean species name (ensure spaces for taxonkit)
     CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
 
     echo "Deriving TaxIDs for: \$CLEAN_NAME"
-
+    
     # 1. Get TaxID
     SPEC_ID=\$(echo "\$CLEAN_NAME" | taxonkit name2taxid | cut -f2)
+    
+    # TODO add here check that SPEC_ID is species taxid if it's subspecies
+    # TODO make sure that same species name will have no bugs
 
     if [ -z "\$SPEC_ID" ]; then
         echo "WARNING: TaxID not found for \$CLEAN_NAME"
@@ -115,18 +104,15 @@ process PREPARE_TAXONOMY {
             echo "WARNING: Family rank not found for \$CLEAN_NAME"
             touch relatives.taxid
         else
-            # 4. Get Family members and exclude self to find relatives
+            # 4. Get Family members and exclude self
             taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
             grep -vFf species.taxid family_all.taxid > relatives.taxid
-            # rm family_all.taxid
+            rm family_all.taxid
         fi
     fi
     """
 }
 
-/*
- * PROCESS: Save Query & Metadata
- */
 process SAVE_QUERY {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
@@ -146,50 +132,174 @@ process SAVE_QUERY {
 }
 
 /*
- * PROCESS: TBLASTN
- * Uses available CPUs to speed up search.
+ * PROCESS: TBLASTN & FILTER
+ * 1. Merges TaxIDs (Species + Relatives)
+ * 2. Runs Single TBLASTN
+ * 3. Filters hits (Strict for Species, loose for Outgroup)
+ * 4. Extracts sequences
  */
-process TBLASTN {
+process TBLASTN_AND_FILTER {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
-    
-    // Default to 4 CPUs per BLAST task. 
-    // Nextflow will run as many tasks in parallel as your machine permits (Total CPUs / 4).
     cpus 4 
 
     input:
-    tuple val(id), path(query), path(species_txt), path(species_taxid_list), path(relatives_taxid_list)
+    tuple val(id), path(query), path(species_txt), path(species_taxids), path(relatives_taxids)
     val db_path
 
     output:
-    path "blast_output_species.tsv"
+    path "blast_result.tsv", optional: true
+    path "sampled_sequences.fasta"
+    path "filtering_log.txt"
 
     script:
     """
-    outfmt="6 saccver pident length qlen gapopen sstart send evalue bitscore sframe staxids"
-
-    ARGS=""
-    if [ -s "${species_taxid_list}" ]; then
-        ARGS="-taxidlist ${species_taxid_list}"
-        echo "Running with taxid restriction..."
+    # 1. Prepare Combined TaxID List
+    cat ${species_taxids} ${relatives_taxids} > search.taxids
+    
+    # If list is empty (taxonkit failed), warn and exit
+    if [ ! -s search.taxids ]; then
+        echo "No TaxIDs found. Skipping BLAST." > filtering_log.txt
+        touch sampled_sequences.fasta
+        exit 0
     fi
 
-	tblastn -query ${query} -db ${db_path} -db_gencode ${params.gencode} \
+    # 2. Run TBLASTN
+    # We ask for 'staxids' to differentiate species from relatives later
+    outfmt="6 saccver pident length qlen gapopen sstart send evalue bitscore sframe staxids"
+    
+    tblastn -query ${query} -db ${db_path} -db_gencode ${params.gencode} \
         -max_target_seqs ${params.max_target_seqs} \
-		-evalue 0.00001 -num_threads ${task.cpus} \$ARGS \
-		-outfmt "\$outfmt" -out blast_output_species.tsv
+        -evalue 0.0001 -num_threads ${task.cpus} \
+        -taxidlist search.taxids \
+        -outfmt "\$outfmt" \
+        -out blast_result.tsv
+
+    # 3. Python Script: Filter and Select Outgroup
+    python3 -c "
+import sys
+
+def parse_taxids(filename):
+    ids = set()
+    try:
+        with open(filename) as f:
+            for line in f:
+                if line.strip(): ids.add(line.strip())
+    except FileNotFoundError:
+        pass
+    return ids
+
+species_ids = parse_taxids('${species_taxids}')
+
+species_hits = []
+outgroup_hits = []
+
+# Thresholds
+MIN_IDENT_SPECIES = 80.0
+MIN_COV_SPECIES = 0.5
+
+MIN_IDENT_OUTGROUP = 60.0 # Looser for outgroup
+MIN_COV_OUTGROUP = 0.5
+
+try:
+    with open('blast_result.tsv') as f:
+        for line in f:
+            parts = line.strip().split('\t')
+            if len(parts) < 11: continue
+            
+            # saccver pident length qlen gapopen sstart send evalue bitscore sframe staxids
+            sacc = parts[0]
+            pident = float(parts[1])
+            length = float(parts[2])
+            qlen = float(parts[3])
+            bitscore = float(parts[8])
+            staxids = parts[10].split(';') # Handle multiple taxids
+            
+            coverage = length / qlen
+            
+            # Check if ANY of the hit's taxids belong to our target species
+            is_species = any(tid in species_ids for tid in staxids)
+            
+            hit_data = {
+                'sacc': sacc,
+                'sstart': parts[5],
+                'send': parts[6],
+                'sframe': parts[9],
+                'bitscore': bitscore,
+                'pident': pident,
+                'line': line.strip()
+            }
+
+            if is_species:
+                if pident >= MIN_IDENT_SPECIES and coverage >= MIN_COV_SPECIES:
+                    species_hits.append(hit_data)
+            else:
+                # It is a relative (since we restricted blast to species+relatives)
+                if pident >= MIN_IDENT_OUTGROUP and coverage >= MIN_COV_OUTGROUP:
+                    outgroup_hits.append(hit_data)
+
+except FileNotFoundError:
+    print('No blast results found.')
+
+# Sort Outgroup by bitscore (descending) to find the Closest Relative
+outgroup_hits.sort(key=lambda x: x['bitscore'], reverse=True)
+
+# Select Hits
+final_coords = []
+log_lines = []
+
+log_lines.append(f'Found {len(species_hits)} valid species hits.')
+for h in species_hits:
+    # Format for blastdbcmd: ID start-end strand
+    strand = 'minus' if int(h['sframe']) < 0 else 'plus'
+    # Ensure start < end for blastdbcmd range extraction logic if needed, 
+    # but blastdbcmd handles start>end as minus strand automatically if we format carefully.
+    # However, legacy code logic: entry range strand
+    # Let's use simple range format: start-end
+    
+    start, end = h['sstart'], h['send']
+    final_coords.append(f\"{h['sacc']} {start}-{end} {strand}\")
+
+log_lines.append(f'Found {len(outgroup_hits)} potential outgroups.')
+if outgroup_hits:
+    best_out = outgroup_hits[0]
+    log_lines.append(f\"Selected Outgroup: {best_out['sacc']} (Ident: {best_out['pident']}%, Score: {best_out['bitscore']})\")
+    
+    strand = 'minus' if int(best_out['sframe']) < 0 else 'plus'
+    start, end = best_out['sstart'], best_out['send']
+    final_coords.append(f\"{best_out['sacc']} {start}-{end} {strand}\")
+else:
+    log_lines.append('WARNING: No valid outgroup found.')
+
+with open('extract_coords.txt', 'w') as f:
+    for line in final_coords:
+        f.write(line + '\\n')
+
+with open('filtering_log.txt', 'w') as f:
+    f.write('\\n'.join(log_lines) + '\\n')
+    "
+
+    # 4. Extract Sequences using blastdbcmd
+    if [ -s extract_coords.txt ]; then
+        # blastdbcmd -entry_batch expects: ID range strand? 
+        # Actually standard input for -entry_batch is just ID, or ID range. 
+        # To handle strand, it's safer to use the 'awk' trick from legacy or handle extraction carefully.
+        # But blastdbcmd -entry_batch supports "seq_id range strand" in newer versions? 
+        # Standard: id start-end strand
+        
+        blastdbcmd -db ${db_path} -entry_batch extract_coords.txt -outfmt %f -out sampled_sequences.fasta
+    else
+        touch sampled_sequences.fasta
+    fi
     """
 }
 
 workflow {
-    // Initialize a counter for unique IDs
     def seq_counter = 0
 
-    // 1. Prepare Channels
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
-            // Validation Logic
             def seq = record.seqString.toUpperCase()
             if (seq =~ /[EFILPQZ]/) return true
             def dna_count = seq.count('A') + seq.count('C') + seq.count('G') + seq.count('T') + seq.count('N')
@@ -197,22 +307,15 @@ workflow {
             return true
         }
         .map { record ->
-            // Increment counter for every sequence passed
             def count = ++seq_counter
             def clean_original_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9\.]/, '_')            
             def unique_id = "${count}__${clean_original_id}"
             [unique_id, record.header, record.seqString]
         }
 
-    // 2. Parse Species Name
     PARSE_SPECIES_NAME(raw_sequences, params.species_name)
-
-    // 3. Prepare Taxonomy
     PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
-
-    // 4. Save Query Files
     SAVE_QUERY(PREPARE_TAXONOMY.out)
-
-    // 5. Run TBLASTN
-    TBLASTN(SAVE_QUERY.out, params.db)
+    
+    TBLASTN_AND_FILTER(SAVE_QUERY.out, params.db)
 }
