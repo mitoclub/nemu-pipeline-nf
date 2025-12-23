@@ -200,7 +200,6 @@ import sys
 
 hits = []
 outgroup_hits = []
-log_lines = []
 
 # Thresholds
 MIN_IDENT_SPECIES = 80.0
@@ -244,15 +243,13 @@ if outgroup_hits:
     # Sort Outgroup by bitscore (descending) to find the Closest Relative
     outgroup_hits.sort(key=lambda x: x['bitscore'], reverse=True)
     best_out = outgroup_hits[0]
-    log_lines.append(f\\"Selected Outgroup: {best_out['sacc']}, Ident: {best_out['pident']}%, Score: {best_out['bitscore']}\\")
+    print(f\\"Selected Outgroup: {best_out['sacc']}, Ident: {best_out['pident']}%, Score: {best_out['bitscore']}\\")
     hits.append(best_out)    
 else:
-    log_lines.append('WARNING: No valid outgroup found.')
+    print('WARNING: No valid outgroup found.')
 
+print(f'Found {len(hits)} valid species hits.')
 final_coords = []
-log_lines = []
-
-log_lines.append(f'Found {len(hits)} valid species hits.')
 for h in hits:
     # Logic: ID start-end strand
     strand = 'minus' if h['sframe'] < 0 else 'plus'
@@ -263,9 +260,7 @@ with open('extract_coords.txt', 'w') as f:
     for line in final_coords:
         f.write(line + '\\n')
 
-with open('filtering_log.txt', 'a') as f:
-    f.write('\\n'.join(log_lines) + '\\n')
-    "
+    " >> filtering_log.txt
     # END OF PYTHON CODE
 
     # ---------------------------------------------------------
@@ -273,12 +268,19 @@ with open('filtering_log.txt', 'a') as f:
     # ---------------------------------------------------------
     if [ -s extract_coords.txt ]; then
         blastdbcmd -db ${db_path} -entry_batch extract_coords.txt -outfmt %f -out sampled_sequences.fasta
+        
+        # Encode IDs with seqkit https://bioinf.shenwei.me/seqkit/usage/#replace (Rename with number of record)
+        seqkit replace -p .+ -r "seq_{nr}" -w 0 < sampled_sequences.fasta > sampled_sequences_enc_raw.fasta
+        if grep -q "Selected Outgroup" filtering_log.txt; then
+            echo "Outgroup sequence included."
+            outgrp_id=\$(seqkit seq -i -n < ./sampled_sequences_enc_raw.fasta | tail -1)
+            seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < sampled_sequences_enc_raw.fasta > sampled_sequences_enc.fasta
+        else
+            echo "No outgroup sequence included."
+        fi
     else
         touch sampled_sequences.fasta
     fi
-
-    # TODO encode IDs with seqkit https://bioinf.shenwei.me/seqkit/usage/#replace (Rename with number of record)
-
     """
 }
 
