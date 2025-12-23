@@ -473,6 +473,12 @@ if [[ $params.msa_mode = "accurate" ]]; then
 elif [[ $params.msa_mode = "fast" ]]; then
 
 	# TODO improve according to recomentations of macse team https://www.agap-ge2pop.org/reportgapsaa2nt/
+	# 1. use trimNonHomologousFragments to eliminate non-homologous sequence fragments
+	# 2. use alignSequences with rapid optimization options to unravel frameshifts
+	# 3. preserve frameshifts (but not gaps) to obtained unaligned nucleotide sequences with documented frameshifts (simply delete the ‘-‘ from your FASTA file)
+	# 4. translate those nucleotide sequences into amino acid sequences using translateNT2AA.
+	# 5. align these amino acids sequences with your favorite alignment software (e.g. MUSCLE, PRANK, MAFFT)
+	# 6. use reportGapsAA2NT to derive your nucleotide alignment from the amino acid alignment found at step 5.
 
 	# NT2AA
 	java -jar /opt/macse_v2.07.jar -prog translateNT2AA -seq $seqs \
