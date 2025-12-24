@@ -330,7 +330,7 @@ process ENCODE_AND_RMDUP {
 
     # Save mapping of encoded headers TODO
     codes=\$(seqkit seq -ni < ./encoded.fasta)
-    original_ids=\$(seqkit seq -ni < ./${sequences})
+    original_names=\$(seqkit seq -n < ./${sequences})
     paste <(echo "\$codes") <(echo "\$original_names") > encoded_headers.txt
     
     # Remove duplicates
@@ -363,6 +363,16 @@ process MSA_DUMMY {
     """
 }
 
+MACSE_JAR="/opt/macse_v2.07.jar"
+
+// THRESHOLDS
+LARGE_DATA_CUTOFF=250    // Switch to Big Data workflow if seqs > this
+MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
+MAX_GAP_SEQ=0.50         // Post-filter: Remove SEQS with >50% gaps
+MAX_GAP_SITE=0.50        // Post-filter: Remove SITES (columns) with >50% gaps
+
+aln_logfile = "alignment.log"
+
 process MSA {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
@@ -381,101 +391,104 @@ process MSA {
 
     script:
     """
+    > 
+    echo "--- STARTING MSA ---" > $aln_logfile
+
+    # 0. PRE-FILTERING (Sanity Check)
+    # Remove very short fragments before we waste time aligning them
+    echo "[0/3] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> $aln_logfile
+    seqkit seq -m $MIN_SEQ_LEN -g "$INPUT_FILE" > input_clean.fasta
+    SEQ_COUNT=$(grep -c "^>" input_clean.fasta)
+    echo "      Sequences remaining: $\SEQ_COUNT" >> $aln_logfile
+
     if [ $msa_mode = "auto_cdn" ]; then
-        if [ ${num_seqs} -le 100 ]; then
-            msa_mode_sh="accurate_cdn"
-        else
+        if [ "\$SEQ_COUNT" -gt "$LARGE_DATA_CUTOFF" ]; then
             msa_mode_sh="fast_cdn"
+        else
+            msa_mode_sh="accurate_cdn"
         fi
     else
         msa_mode_sh="$msa_mode"
     fi
 
-    if [[ \$msa_mode_sh = "pure_mafft" ]]; then
-        mafft --thread ${task.cpus} $sequences > msa_raw.fasta
-
-    elif [[ \$msa_mode_sh = "accurate_cdn" ]]; then
-        mafft --thread ${task.cpus} $sequences > seqM.fa
-        sed '/^>/!s/[actg]/\\U&/g' seqM.fa > seqMU.fa
+    # 1. ALIGNMENT LOGIC
+    if [ \$msa_mode_sh = "fast_cdn" ]; then
+        # ================= STRATEGY A: BIG DATA WORKFLOW =================
+        echo "[1/3] Strategy: BIG DATA (> $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
-        # TODO move filters to the end of the process
+        # A1. Trim non-homologous fragments
+        java -jar "$MACSE_JAR" -prog trimNonHomologousFragments \
+            -seq input_clean.fasta -gc_def "$GENCODE" \
+            -out_NT 1_trimmed.fasta > /dev/null 2>&1
 
-        goalign clean seqs -c 0.3 -i seqMU.fa -o seqMC.fa
-        goalign clean sites -c $thr_gaps -i seqMC.fa -o seqMCC.fa
-        seqkit rmdup -s < seqMCC.fa > seq_dd.fa
-        java -jar /opt/macse_v2.07.jar -prog alignSequences -seq seq_dd.fa \
-            -gc_def $gencode -optim 2 -max_refine_iter 0 -ambi_OFF
+        # A2. Repair Frameshifts (Fast mode)
+        echo "      Running MACSE Repair (Frameshift detection)..." >> $aln_logfile
+        java -jar "$MACSE_JAR" -prog alignSequences \
+            -seq 1_trimmed.fasta -gc_def "$GENCODE" \
+            -out_NT 2_repaired.fasta \
+            -max_refine_iter 0 -local_realign_init 0 > /dev/null 2>&1
+
+        # A3. Prepare for Translation (Remove alignment gaps '-', keep FS fixes '!')
+        sed 's/-//g' 2_repaired.fasta > 3_ungapped.fasta
+
+        # A4. Translate
+        java -jar "$MACSE_JAR" -prog translateNT2AA \
+            -seq 3_ungapped.fasta -gc_def "$GENCODE" \
+            -out_AA 4_protein.faa > /dev/null 2>&1
+
+        # A5. Align Protein (MAFFT)
+        echo "      Running MAFFT Alignment..." >> $aln_logfile
+        mafft --thread "${task.cpus}" --auto --quiet 4_protein.faa > 5_aligned_protein.faa
+
+        # A6. Back-Translate
+        java -jar "$MACSE_JAR" -prog reportGapsAA2NT \
+            -align_AA 5_aligned_protein.faa \
+            -seq 3_ungapped.fasta -gc_def "$GENCODE" \
+            -out_NT raw_alignment.fasta > /dev/null 2>&1
+
+        # Cleanup intermediate files TODO uncomment
+        # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
+
+    elif [ \$msa_mode_sh = "accurate_cdn" ]; then
+        # ================= STRATEGY B: PURE MACSE =================
+        echo "[1/3] Strategy: PURE MACSE (< $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
-        java -jar /opt/macse_v2.07.jar -prog exportAlignment \
-            -align seq_dd_NT.fa -gc_def $gencode -ambi_OFF \
-            -codonForInternalStop "NNN" -codonForFinalStop "---" \
-            -codonForInternalFS "NNN" -codonForExternalFS "---" \
-            -out_stat_per_seq macse_stat_per_seq.csv -out_stat_per_site macse_stat_per_site.csv 
-
-        sed 's/!/n/g' seq_dd_NT_NT.fa > seq_dd_NT_FS.fa
-        goalign clean sites -c $thr_gaps -i seq_dd_NT_FS.fa -o seq_dd_NT_FS_clean.fa
-        seqkit rmdup -s < seq_dd_NT_FS_clean.fa > msa_nuc_lower.fasta
-        sed '/^>/!s/[actg]/\\U&/g' msa_nuc_lower.fasta > msa_nuc.fasta
-
-    elif [[ \$msa_mode_sh = "fast_legacy" ]]; then
-
-        # TODO improve according to recomentations of macse team https://www.agap-ge2pop.org/reportgapsaa2nt/
-
-        # NT2AA
-        java -jar /opt/macse_v2.07.jar -prog translateNT2AA -seq $sequences \
-            -gc_def $gencode -out_AA translated.faa
-        #ALN AA
-        mafft --thread ${task.cpus} translated.faa > translated_aln.faa
-        #AA_ALN --> NT_ALN
-        java -jar /opt/macse_v2.07.jar -prog reportGapsAA2NT \
-            -align_AA translated_aln.faa -seq $sequences -out_NT aln.fasta
-        echo "Do quality control" >&2
-        /opt/scripts_latest/macse2.pl aln.fasta msa_nuc.fasta
-
-        cp translated_aln.faa seq_dd_AA.fa
-    elif [[ \$msa_mode_sh = "fast_cdn" ]]; then
-        # "Big Data" workflow
-
-        MACSE_JAR="/opt/macse_v2.07.jar"
-
-        # TODO add gencode support
-
-        # 1. Trim junk (Optional but recommended)
-        java -jar $MACSE_JAR -prog trimNonHomologousFragments \
-            -seq $sequences -out_NT 1_trimmed.fasta
-
-        # 2. Repair Frameshifts (The "Fast" MACSE run)
-        # We use optimization 0 to make it fast; we just want the FS detection.
-        java -jar $MACSE_JAR -prog alignSequences \
-            -seq 1_trimmed.fasta -out_NT 2_repaired_with_gaps.fasta \
-            -max_refine_iter 0 -local_realign_init 0
-
-        # 3. Remove Gaps (Preserve frameshift corrections)
-        # We remove dashes (-) but keep the sequence.
-        sed 's/-//g' 2_repaired_with_gaps.fasta > 3_repaired_ungapped.fasta
-
-        # 4. Translate (Now safe because FS are fixed)
-        java -jar $MACSE_JAR -prog translateNT2AA \
-            -seq 3_repaired_ungapped.fasta -out_AA 4_translated.faa
-
-        # 5. Fast Alignment (MAFFT)
-        mafft --auto --thread 4 4_translated.faa > 5_aligned.faa
-
-        # 6. Back-Translate
-        java -jar $MACSE_JAR -prog reportGapsAA2NT \
-            -align_AA 5_aligned.faa -seq 3_repaired_ungapped.fasta \
-            -out_NT final_codon_alignment.fasta
-
-        # Cleanup intermediate files
-        rm 1_trimmed.fasta 2_repaired_with_gaps.fasta 3_repaired_ungapped.fasta 4_translated.faa
+        echo "      Running Full MACSE Alignment..." >> $aln_logfile
+        java -jar "$MACSE_JAR" -prog alignSequences \
+            -seq input_clean.fasta -gc_def "$GENCODE" \
+            -out_NT raw_alignment.fasta \
+            -out_AA raw_alignment_AA.fasta > /dev/null 2>&1
+    
+    elif [ \$msa_mode_sh = "pure_mafft" ]; then
+        # ================= STRATEGY C: PURE MAFFT =================
+        echo "[1/3] Strategy: PURE MAFFT" >> $aln_logfile
+        echo "      Running MAFFT Alignment..." >> $aln_logfile
+        mafft --thread "${task.cpus}" --auto --quiet input_clean.fasta > raw_alignment.fasta
     
     fi
 
-    # Final cleaning TODO
-    #goalign clean seqs -c 0.3 -i seqMU.fa -o seqMC.fa
-    #goalign clean sites -c $thr_gaps -i seqMC.fa -o seqMCC.fa
-    #seqkit rmdup -s < seqMCC.fa > seq_dd.fa
+    # 2. POST-ALIGNMENT FILTERING
+    echo "[2/3] Filtering Alignment..." >> $aln_logfile
 
+    # Step 2a: Clean SITES (Columns)
+    # Remove columns where >50% of sequences have a gap. 
+    # This removes regions that are likely insertion artifacts in a few sequences.
+    goalign clean sites -c "$MAX_GAP_SITE" -i raw_alignment.fasta -o filtered_sites.fasta
+
+    # Step 2b: Clean SEQUENCES (Rows)
+    # Remove sequences that are >50% gaps (after site cleaning).
+    goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o "filtered_seqs.fasta"
+
+    # Step 2c: Remove Duplicates
+    seqkit rmdup -s < filtered_seqs.fasta > msa_nuc.fasta
+
+    # 3. FINAL STATS
+    echo "[3/3] Generating Final Report..." >> $aln_logfile
+    echo "--- Raw Alignment Stats ---" >> $aln_logfile
+    seqkit stats raw_alignment.fasta >> $aln_logfile
+    echo "--- Filtered Alignment Stats ---" >> $aln_logfile
+    seqkit stats "msa_nuc.fasta" >> $aln_logfile
+    echo "--- DONE. Final file: msa_nuc.fasta ---" >> $aln_logfile
     """
 }
 
