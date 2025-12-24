@@ -385,9 +385,7 @@ process MSA {
     val thr_gaps
 
     output:
-    tuple val(id), path("msa_nuc.fasta"), path("")
-    //  file "seq_dd_AA.fa" into seq_dd_AA_for_QC
-    //  file "*.csv" optional true
+    tuple val(id), path("msa_nuc.fasta"), path(aln_logfile)
 
     script:
     """
@@ -396,7 +394,7 @@ process MSA {
 
     # 0. PRE-FILTERING (Sanity Check)
     # Remove very short fragments before we waste time aligning them
-    echo "[0/3] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> $aln_logfile
+    echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> $aln_logfile
     seqkit seq -m $MIN_SEQ_LEN -g "$INPUT_FILE" > input_clean.fasta
     SEQ_COUNT=$(grep -c "^>" input_clean.fasta)
     echo "      Sequences remaining: $\SEQ_COUNT" >> $aln_logfile
@@ -414,7 +412,7 @@ process MSA {
     # 1. ALIGNMENT LOGIC
     if [ \$msa_mode_sh = "fast_cdn" ]; then
         # ================= STRATEGY A: BIG DATA WORKFLOW =================
-        echo "[1/3] Strategy: BIG DATA (> $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
+        echo "[1/5] Strategy: BIG DATA (> $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
         # A1. Trim non-homologous fragments
         java -jar "$MACSE_JAR" -prog trimNonHomologousFragments \
@@ -451,7 +449,7 @@ process MSA {
 
     elif [ \$msa_mode_sh = "accurate_cdn" ]; then
         # ================= STRATEGY B: PURE MACSE =================
-        echo "[1/3] Strategy: PURE MACSE (< $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
+        echo "[1/5] Strategy: PURE MACSE (< $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
         echo "      Running Full MACSE Alignment..." >> $aln_logfile
         java -jar "$MACSE_JAR" -prog alignSequences \
@@ -461,34 +459,52 @@ process MSA {
     
     elif [ \$msa_mode_sh = "pure_mafft" ]; then
         # ================= STRATEGY C: PURE MAFFT =================
-        echo "[1/3] Strategy: PURE MAFFT" >> $aln_logfile
+        echo "[1/5] Strategy: PURE MAFFT" >> $aln_logfile
         echo "      Running MAFFT Alignment..." >> $aln_logfile
         mafft --thread "${task.cpus}" --auto --quiet input_clean.fasta > raw_alignment.fasta
     
     fi
 
-    # 2. POST-ALIGNMENT FILTERING
-    echo "[2/3] Filtering Alignment..." >> $aln_logfile
+    # [2] SANITIZING (Export Alignment)
+    if [ \$msa_mode_sh != "pure_mafft" ]; then
+        # Replaces '!' and internal stops with 'NNN' or '---' to fix biological validity
+        echo "[2/5] Sanitizing Alignment (Masking stops/frameshifts)..."
 
-    # Step 2a: Clean SITES (Columns)
+        java -jar "$MACSE_JAR" -prog exportAlignment \
+            -align raw_alignment.fasta \
+            -gc_def "$GENCODE" \
+            -ambi_OFF \
+            -codonForInternalStop "NNN" \
+            -codonForFinalStop "---" \
+            -codonForInternalFS "NNN" \
+            -codonForExternalFS "---" \
+            -out_NT sanitized_alignment.fasta \
+            -out_stat_per_seq macse_stat_per_seq.csv \
+            -out_stat_per_site macse_stat_per_site.csv > /dev/null 2>&1
+    fi
+
+    # 3. POST-ALIGNMENT FILTERING
     # Remove columns where >50% of sequences have a gap. 
-    # This removes regions that are likely insertion artifacts in a few sequences.
-    goalign clean sites -c "$MAX_GAP_SITE" -i raw_alignment.fasta -o filtered_sites.fasta
-
-    # Step 2b: Clean SEQUENCES (Rows)
     # Remove sequences that are >50% gaps (after site cleaning).
+    echo "[3/5] Filtering Alignment..." >> $aln_logfile
+    goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
     goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o "filtered_seqs.fasta"
 
-    # Step 2c: Remove Duplicates
+    # Remove Duplicates
     seqkit rmdup -s < filtered_seqs.fasta > msa_nuc.fasta
 
-    # 3. FINAL STATS
-    echo "[3/3] Generating Final Report..." >> $aln_logfile
+    # 4. FINAL STATS
+    echo "[4/5] Generating Final Report..." >> $aln_logfile
     echo "--- Raw Alignment Stats ---" >> $aln_logfile
     seqkit stats raw_alignment.fasta >> $aln_logfile
     echo "--- Filtered Alignment Stats ---" >> $aln_logfile
     seqkit stats "msa_nuc.fasta" >> $aln_logfile
     echo "--- DONE. Final file: msa_nuc.fasta ---" >> $aln_logfile
+
+    # [5] OPTIONAL: N-Content Warning
+    # If a sequence is mostly 'NNN' (from your sanitizer), you might want to know.
+    echo "--- Ambiguity Check (Sequences with >20% Ns) ---"
+    seqkit fx2tab --name --gc --avg-qual "msa_nuc.fasta" | awk '$4 > 20 {print $1 " has high N content"}' >> $aln_logfile
     """
 }
 
