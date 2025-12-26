@@ -30,31 +30,15 @@ params.input        = "data/proteins.fa"
 params.outdir       = "results"
 params.db           = "/home/kpotoh/.nuc_db/dolphin"
 params.taxdump      = "/home/kpotoh/.taxonkit"
-// params.scipts       = "/home/kpotoh/nemu-pipeline/scripts/perl" TODO remove scripts and perl dependencies
 params.species_name = false  // Override species name if provided (optional)
 params.gencode      = 2      
 params.max_target_seqs = 2000 // Limit for species hits
 params.min_seqs     = 4    // Minimum number of sequences after filtering to proceed to MSA
-params.msa_mode     = "accurate" // "accurate" or "fast"
+params.msa_mode     = "auto_cdn" // "auto_cdn", "accurate_cdn", "fast_cdn", or "pure_mafft"
 params.threads      = 4
 
-// Internal parameters
-thr_gaps = 0.05 // Gap threshold for MSA cleaning
+MACSE_JAR="/opt/macse_v2.07.jar"
 
-
-// check params
-if (!params.input || params.input == "") {
-    log.error "ERROR: Input file not specified. Use --input to provide input FASTA file."
-    System.exit(1)
-}
-if (!params.db || params.db == "") {
-    log.error "ERROR: BLAST database path not specified. Use --db to provide BLAST database."
-    System.exit(1)
-}
-if (!params.msa_mode || !(params.msa_mode in ["auto_cdn", "accurate_cdn", "fast_cdn", "pure_mafft"])) {
-    log.error "ERROR: Invalid MSA mode specified. Use --msa_mode with 'auto_cdn', 'accurate_cdn', 'fast_cdn', or 'pure_mafft'."
-    System.exit(1)
-}
 
 log.info """\
     N E M U   P I P E L I N E  ${NEMU_VERSION}
@@ -352,18 +336,16 @@ process MSA_DUMMY {
     tuple val(id), path(sequences), path(encoded_headers), val(num_seqs)
     val gencode
     val msa_mode
-    val thr_gaps
 
     output:
-    tuple val(id), path("msa_nuc.fasta")
+    tuple val(id), path("msa_nuc.fasta"), env(num_seqs)
 
     script:
     """
     echo "Dummy MSA process for ${id}" > msa_nuc.fasta
+    num_seqs=${num_seqs}
     """
 }
-
-MACSE_JAR="/opt/macse_v2.07.jar"
 
 // THRESHOLDS
 LARGE_DATA_CUTOFF=250    // Switch to Big Data workflow if seqs > this
@@ -382,7 +364,6 @@ process MSA {
     tuple val(id), path(sequences), path(encoded_headers), val(num_seqs)
     val gencode
     val msa_mode
-    val thr_gaps
 
     output:
     tuple val(id), path("msa_nuc.fasta"), path(aln_logfile)
@@ -396,8 +377,8 @@ process MSA {
     # Remove very short fragments before we waste time aligning them
     echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> $aln_logfile
     seqkit seq -m $MIN_SEQ_LEN -g "$INPUT_FILE" > input_clean.fasta
-    SEQ_COUNT=$(grep -c "^>" input_clean.fasta)
-    echo "      Sequences remaining: $\SEQ_COUNT" >> $aln_logfile
+    SEQ_COUNT=\$(grep -c "^>" input_clean.fasta)
+    echo "      Sequences remaining: \$SEQ_COUNT" >> $aln_logfile
 
     if [ $msa_mode = "auto_cdn" ]; then
         if [ "\$SEQ_COUNT" -gt "$LARGE_DATA_CUTOFF" ]; then
@@ -416,13 +397,13 @@ process MSA {
         
         # A1. Trim non-homologous fragments
         java -jar "$MACSE_JAR" -prog trimNonHomologousFragments \
-            -seq input_clean.fasta -gc_def "$GENCODE" \
+            -seq input_clean.fasta -gc_def "$gencode" \
             -out_NT 1_trimmed.fasta > /dev/null 2>&1
 
         # A2. Repair Frameshifts (Fast mode)
         echo "      Running MACSE Repair (Frameshift detection)..." >> $aln_logfile
         java -jar "$MACSE_JAR" -prog alignSequences \
-            -seq 1_trimmed.fasta -gc_def "$GENCODE" \
+            -seq 1_trimmed.fasta -gc_def "$gencode" \
             -out_NT 2_repaired.fasta \
             -max_refine_iter 0 -local_realign_init 0 > /dev/null 2>&1
 
@@ -431,7 +412,7 @@ process MSA {
 
         # A4. Translate
         java -jar "$MACSE_JAR" -prog translateNT2AA \
-            -seq 3_ungapped.fasta -gc_def "$GENCODE" \
+            -seq 3_ungapped.fasta -gc_def "$gencode" \
             -out_AA 4_protein.faa > /dev/null 2>&1
 
         # A5. Align Protein (MAFFT)
@@ -441,7 +422,7 @@ process MSA {
         # A6. Back-Translate
         java -jar "$MACSE_JAR" -prog reportGapsAA2NT \
             -align_AA 5_aligned_protein.faa \
-            -seq 3_ungapped.fasta -gc_def "$GENCODE" \
+            -seq 3_ungapped.fasta -gc_def "$gencode" \
             -out_NT raw_alignment.fasta > /dev/null 2>&1
 
         # Cleanup intermediate files TODO uncomment
@@ -453,7 +434,7 @@ process MSA {
         
         echo "      Running Full MACSE Alignment..." >> $aln_logfile
         java -jar "$MACSE_JAR" -prog alignSequences \
-            -seq input_clean.fasta -gc_def "$GENCODE" \
+            -seq input_clean.fasta -gc_def "$gencode" \
             -out_NT raw_alignment.fasta \
             -out_AA raw_alignment_AA.fasta > /dev/null 2>&1
     
@@ -472,7 +453,7 @@ process MSA {
 
         java -jar "$MACSE_JAR" -prog exportAlignment \
             -align raw_alignment.fasta \
-            -gc_def "$GENCODE" \
+            -gc_def "$gencode" \
             -ambi_OFF \
             -codonForInternalStop "NNN" \
             -codonForFinalStop "---" \
@@ -504,16 +485,285 @@ process MSA {
     # [5] OPTIONAL: N-Content Warning
     # If a sequence is mostly 'NNN' (from your sanitizer), you might want to know.
     echo "--- Ambiguity Check (Sequences with >20% Ns) ---"
-    seqkit fx2tab --name --gc --avg-qual "msa_nuc.fasta" | awk '$4 > 20 {print $1 " has high N content"}' >> $aln_logfile
+    seqkit fx2tab --name --gc --avg-qual "msa_nuc.fasta" | awk '\$4 > 20 {print \$1 " has high N content"}' >> $aln_logfile
+    num_seqs=\$(grep -c "^>" msa_nuc.fasta)
     """
 }
 
+QUANTILE=0.1
+
+process BUILD_TREE {
+    tag "$id"
+    publishDir "${params.outdir}/${id}", mode: 'copy'
+    cpus params.threads
+
+    input:
+    tuple val(id), path(sequences)
+    val model
+    val run_shrinking
+
+    output:
+    tuple val(id), path("tree.nwk"), path("iqtree.report")
+
+    errorStrategy 'retry'
+    maxRetries 3
+
+    script:
+    """
+    # Build phylogenetic tree with IQ-TREE 2
+    iqtree2 -s $sequences -m $model -nt $task.cpus --prefix iqtree
+
+    # Filter outliers with TreeShrink
+    nseq=\$(grep -c '>' $sequences)
+    if [ $run_shrinking = true ] && [ \$nseq -gt 10 ]; then
+        run_treeshrink.py -t iqtree.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
+    else
+        cat iqtree.treefile > treeshrink.nwk
+    fi
+
+    # Check outgroup "quality": is it the furthest leaf?
+    nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 1> branches.txt
+    outgrp_bl=\$(grep OUTGRP branches.txt | cut -f 2)
+
+    if [ `grep -c OUTGRP branches.txt` -eq 1 ] && [ \$outgrp_bl == 0 ]; then
+        cat "branches.txt"  >&2
+        echo "Something went wrong: outgroup is not furthest leaf in the tree, let's drop it." >&2
+        # Remove outgroup from tree
+        nw_prune treeshrink.nwk OUTGRP > pruned_tree.nwk
+        mv -f pruned_tree.nwk treeshrink.nwk        
+    fi
+
+    if grep -q OUTGRP iqtree.treefile; then
+        # reroot tree on outgroup
+        nw_reroot -l treeshrink.nwk OUTGRP > tree.nwk
+    else
+        # reroot tree on midpoint
+        nw_reroot treeshrink.nwk > tree.nwk
+    fi
+    """
+}
+
+process ASR {
+    tag "$id"
+    cpus params.threads
+
+    input:
+    tuple val(id), path(sequences), path(tree)
+    val model
+
+    output:
+    tuple val(id), path('msa_filtered.fasta'), path("final_tree.nwk"), path("iqtree_anc.state"), path("rates.tsv")
+
+    errorStrategy 'retry'
+    maxRetries 3
+
+    script:
+    """
+    # drop sequences not present in the tree
+    nw_labels -I $tree | sed 's/\$/\$/' > leaves.txt
+    seqkit grep -n -f leaves.txt -w 0 $sequences > msa_filtered.fasta
+
+    # Ancestral State Reconstruction with IQ-TREE 2
+    iqtree2 -te $tree -s msa_filtered.fasta -m $model -asr -nt $task.cpus --prefix asr --rate
+
+    # rename rates file
+    mv asr.rate rates.tsv
+
+    if [ `grep -c OUTGRP anc.treefile` -eq 1 ]; then
+        nw_reroot -l anc.treefile OUTGRP | sed 's/;/ROOT;/' > final_tree.nwk
+        echo "INFO: The tree (after ASR) is rerooted using OUTGRP" >&2
+    else
+        nw_reroot anc.treefile | sed 's/;/ROOT;/' > final_tree.nwk
+        echo "INFO: The tree (after ASR) is rerooted on the longest branch" >&2
+    fi
+
+    iqtree_states_add_part.py anc.state iqtree_anc.state
+    """
+}
+
+process MUT_EXTRACTION {
+    tag "$id"
+    publishDir "${params.outdir}/${id}", mode: 'copy'
+    cpus params.threads
+
+    input:
+    tuple val(id), path(sequences), path(tree), path(internal_states), path(rates)
+    val gencode
+    val exclude_cons_sites
+    val cons_cat_cutoff
+    val proba_arg
+    val proba_cutoff
+    val save_exp_mutations
+    val uncertainty_coef
+
+    output:
+    tuple val(id), path("observed_mutations.tsv"), path("expected_freqs.tsv"), path("mut_extraction.log")
+    tuple val(id), path(sequences), path(tree)
+    path optional "expected_mutations.tsv"
+
+    script:
+    """
+    ARGS="--no-mutspec --outdir mout --threads ${task.cpus} --syn --syn4f --all --nonsyn"
+    if [ $exclude_cons_sites = true ]; then
+        \$ARGS="\$ARGS --rates $rates --cat-cutoff $cons_cat_cutoff"
+    fi
+    if [ $proba_arg = "true" ]; then
+        \$ARGS="\$ARGS --proba --pcutoff $proba_cutoff"
+    fi
+    if [ $save_exp_mutations = "true" ]; then
+        \$ARGS="\$ARGS --save-exp-muts"
+    fi
+    if [ $uncertainty_coef = "true" ]; then
+        \$ARGS="\$ARGS --phylocoef"
+    else
+        \$ARGS="\$ARGS --no-phylocoef"
+    fi
+
+    collect_mutations.py --tree $tree --states $sequences --states $internal_states \
+        --gencode $gencode \$ARGS 
+
+    mv mout/* .
+    mv mutations.tsv observed_mutations.tsv
+    mv run.log mut_extraction.log
+    """
+}
+
+process DERIVE_SPECTRA {
+
+publishDir params.outdir, overwrite: true, mode: 'copy',
+    tag "$id"
+    publishDir "${params.outdir}/${id}", mode: 'copy'
+
+    input:
+    tuple val(id), path(obs_muts), path(exp_freqs)
+    val plot
+
+    output:
+    file "*.tsv"
+    file "*.pdf" optional true
+
+    """
+    nmuts=`cat $obs_muts | wc -l`
+    if [ \$nmuts -lt 2 ]; then
+        echo "ERROR: There are no reconstructed mutations after pipeline execution." >&2
+        echo "Unfortunately this gene cannot be processed authomatically on available data." >&2
+        exit 1
+    fi
+
+    calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
+        --exclude OUTGRP,ROOT --mnum192 $params.mnum192 $params.proba_arg \
+        --proba_cutoff $params.proba_cutoff --plot -x pdf \
+        --syn $params.syn4f_arg $params.all_arg $params.nonsyn_arg
+
+    # include all subsets by default
+    if [ $params.internal = true ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
+            --exclude OUTGRP,ROOT --mnum192 $params.mnum192 $params.proba_arg \
+            --proba_cutoff $params.proba_cutoff --plot -x pdf --subset internal \
+            --syn $params.syn4f_arg $params.all_arg $params.nonsyn_arg
+        rm mean_expexted_mutations_internal.tsv
+    fi
+    if [ $params.terminal = true ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
+            --exclude OUTGRP,ROOT --mnum192 $params.mnum192 $params.proba_arg \
+            --proba_cutoff $params.proba_cutoff --plot -x pdf --subset terminal \
+            --syn $params.syn4f_arg $params.all_arg $params.nonsyn_arg
+        rm mean_expexted_mutations_terminal.tsv
+    fi
+    if [ $params.branch_spectra = true ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
+            --exclude OUTGRP,ROOT --mnum192 $params.mnum192 $params.proba_arg \
+            --proba_cutoff $params.proba_cutoff --branches \
+            --syn $params.syn4f_arg $params.all_arg $params.nonsyn_arg
+    fi
+    """
+}
+
+process WRITE_README {
+    publishDir "${params.outdir}", mode: 'copy'
+
+    output:
+    path("readme.txt")
+
+    script:
+"""
+cat > readme.txt <<- EOM
+Output structure:
+
+.
+├── final_tree.nwk						# Final phylogenetic tree
+├── seqs_unique.fasta					# Filtered orthologous sequences
+├── msa_nuc.fasta						# Verified multiple sequence alignment
+├── headers_mapping.txt					# Encoded headers of sequences
+├── encoded_headers.txt					# Encoded headers of sequences (v2 for different versions of input)
+├── logs/
+│   ├── report.blast					# Tblastn output during orthologs search
+│   ├── *.taxids						# Taxids used in taxa-specific blasing in nt; relatives.taxids contains 
+│	│									# 	other species from the genus of query and used for outgroup selection
+│   ├── iqtree.log						# IQ-TREE logs during phylogenetic tree inference
+│   ├── iqtree_report.log				# IQ-TREE report during phylogenetic tree inference
+│   ├── iqtree_treeshrink.log			# TreeShrink logs
+│   ├── iqtree_pruned_nodes.log			# Nodes pruned from tree by TreeShrink
+│   ├── iqtree_anc.log					# IQ-TREE logs during ancestral reconstrution
+│   ├── iqtree_anc_report.log			# IQ-TREE report during ancestral reconstrution
+│   ├── iqtree_mut_extraction.log		# Logs during mutation extraction process
+│   └── branches.txt					# Tree branch lenghts
+├── figures
+│   ├── ms12syn.pdf						# Barplot with  12-component spectrum on synonymous mutations
+│   └── ms192syn.pdf					# Barplot with 192-component spectrum on synonymous mutations
+├── tables
+│   ├── rates.tsv						# Site rates categories for an alignment
+│   ├── expected_freqs.tsv				# Frequencies of substitutions for each tree node genome
+│   ├── mean_expexted_mutations.tsv		# Averaged frequencies of substitutions for entire tree
+│   ├── ms12syn.tsv						# table with 12-component spectrum on synonymous mutations
+│   ├── ms192syn.tsv					# table with 192-component spectrum on synonymous mutations
+│   └── observed_mutations.tsv			# Recontructed mutations
+EOM
+"""
+}
+
+// Helper function to check command existence
+boolean commandExists(String command) {
+    def proc = ["bash", "-c", "command -v ${command}"].execute()
+    proc.waitFor()
+    return proc.exitValue() == 0
+}
 
 workflow {
     // TODO make 2 workflows: main protein and main nucleotide
 
-    def seq_counter = 0
+    // check dependencies
+    for (dep in ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", 
+                 "goalign", "python3", "java", "run_treeshrink.py", 
+                 "nw_reroot", "nw_distance", "nw_prune", "iqtree2"]) {
+        if (!commandExists(dep)) {
+            log.error "ERROR: Required dependency '${dep}' not found in PATH."
+            System.exit(1)
+        }
+    }
 
+    // Check MACSE JAR file
+    if (!file(MACSE_JAR).exists()) {
+        log.error "ERROR: MACSE JAR file not found at path: ${MACSE_JAR}"
+        System.exit(1)
+    }
+
+    // check params
+    if (!params.input || params.input == "") {
+        log.error "ERROR: Input file not specified. Use --input to provide input FASTA file."
+        System.exit(1)
+    }
+    if (!params.db || params.db == "") {
+        log.error "ERROR: BLAST database path not specified. Use --db to provide BLAST database."
+        System.exit(1)
+    }
+    if (!params.msa_mode || !(params.msa_mode in ["auto_cdn", "accurate_cdn", "fast_cdn", "pure_mafft"])) {
+        log.error "ERROR: Invalid MSA mode specified. Use --msa_mode with 'auto_cdn', 'accurate_cdn', 'fast_cdn', or 'pure_mafft'."
+        System.exit(1)
+    }
+
+    WRITE_README()
+    def seq_counter = 0
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
@@ -571,5 +821,16 @@ workflow {
         }
     }
 
-    MSA_DUMMY(seq_num_verified_ch, params.gencode, params.msa_mode, thr_gaps)
+    MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
+    // FILTER: Terminate if number of sequences is less than CUTOFF after MSA
+    msa_num_verified_ch = MSA.out.filter { id, seq, msa_log, num_seqs ->
+        if (num_seqs.toInteger() > params.min_seqs) {
+            return true
+        } else {
+            log.warn "SKIPPING ${id}: Too low number of sequences for '${id}': ${num_seqs}."
+            return false
+        }
+    }
+
+
 }

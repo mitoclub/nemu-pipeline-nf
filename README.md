@@ -1,5 +1,8 @@
 # The pipeline for neutral mutation spectra evaluation based on evolutionary data
 
+# USe this https://github.com/cbcrg/unistrap/tree/master to 
+
+
 ## 2 pipeline versions
 
 1. [NeMu pipeline including tblastn-head](./nemu.nf) - input is single protein sequence that will be used by tblastn to search homologous nucleotide sequences in selected database. After this step NeMu-core executes with phylogeny and spectra inference
