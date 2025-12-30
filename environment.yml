@@ -1,0 +1,25 @@
+name: nemu-pipeline
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - openjdk=11              # Required for MACSE
+  - nextflow
+  - seqkit
+  - taxonkit
+  - blast                   # BLAST+
+  - mafft
+  - goalign
+  - iqtree=2.2.0
+  - newick_utils            # nw_reroot, nw_distance, etc.
+  - treeshrink
+  - pandas
+  - numpy
+  - matplotlib
+  - seaborn
+  - biopython
+  - pip
+  - pip:
+    - pymutspec             # Installs collect_mutations.py, calculate_mutspec.py

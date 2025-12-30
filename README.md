@@ -24,3 +24,19 @@ Run the script (from this directory) to test the pipeline on your computer. Don'
 ```bash
 bash test.sh
 ```
+
+
+## Activate environment
+
+```bash
+mamba env create -f environment.yml
+conda activate nemu-pipeline
+2.  **MACSE Jar:**
+Ensure you have the MACSE jar file. The pipeline defaults to `/opt/macse_v2.07.jar`.
+If you have it elsewhere, run:
+```bash
+nextflow run main.nf --macse_jar /path/to/macse.jar
+3.  **Run:**
+```bash
+nextflow run main.nf --input my_proteins.fasta
+```
