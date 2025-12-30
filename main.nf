@@ -26,16 +26,27 @@ NEMU_VERSION="1.1.0"
 
 
 // Global parameters
-params.input        = "data/proteins.fa"
-params.outdir       = "results"
-params.db           = "/home/kpotoh/.nuc_db/dolphin"
-params.taxdump      = "/home/kpotoh/.taxonkit"
-params.species_name = false  // Override species name if provided (optional)
-params.gencode      = 2      
-params.max_target_seqs = 2000 // Limit for species hits
-params.min_seqs     = 4    // Minimum number of sequences after filtering to proceed to MSA
-params.msa_mode     = "auto_cdn" // "auto_cdn", "accurate_cdn", "fast_cdn", or "pure_mafft"
-params.threads      = 4
+params.input =             "data/proteins.fa"
+params.outdir =            "results"
+params.db =                "${System.getenv('HOME')}/.nuc_db/dolphin"
+params.taxdump =           "${System.getenv('HOME')}/.taxonkit"
+params.species_name =      false                          // Override species name if provided (optional)
+params.gencode =           2
+params.max_target_seqs =   2000                           // Limit for species hits
+params.min_seqs =          4                              // Minimum number of sequences after filtering to proceed to MSA
+params.msa_mode =          "auto_codon"                   // "auto_codon", "accurate_codon", "fast_codon", or "pure_mafft"
+params.threads =           4
+params.model =             "GTR+FO+G6+I"
+params.model_asr =         "auto"
+params.run_treeshrink =    true
+params.cons_cat_cutoff =   0                              // Conservation category cutoff for mutation extraction (0 = no cutoff)
+params.proba_arg =         true
+params.uncertainty_coef =  true
+
+if (params.model_asr == "auto") {
+    params.model_asr = params.model
+}
+
 
 MACSE_JAR="/opt/macse_v2.07.jar"
 
@@ -328,25 +339,6 @@ process ENCODE_AND_RMDUP {
     """
 }
 
-process MSA_DUMMY {
-    tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
-
-    input:
-    tuple val(id), path(sequences), path(encoded_headers), val(num_seqs)
-    val gencode
-    val msa_mode
-
-    output:
-    tuple val(id), path("msa_nuc.fasta"), env(num_seqs)
-
-    script:
-    """
-    echo "Dummy MSA process for ${id}" > msa_nuc.fasta
-    num_seqs=${num_seqs}
-    """
-}
-
 // THRESHOLDS
 LARGE_DATA_CUTOFF=250    // Switch to Big Data workflow if seqs > this
 MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
@@ -366,11 +358,10 @@ process MSA {
     val msa_mode
 
     output:
-    tuple val(id), path("msa_nuc.fasta"), path(aln_logfile)
+    tuple val(id), path("msa_nuc.fasta"), path(aln_logfile), val(new_num_seqs)
 
     script:
     """
-    > 
     echo "--- STARTING MSA ---" > $aln_logfile
 
     # 0. PRE-FILTERING (Sanity Check)
@@ -380,18 +371,18 @@ process MSA {
     SEQ_COUNT=\$(grep -c "^>" input_clean.fasta)
     echo "      Sequences remaining: \$SEQ_COUNT" >> $aln_logfile
 
-    if [ $msa_mode = "auto_cdn" ]; then
+    if [ $msa_mode = "auto_codon" ]; then
         if [ "\$SEQ_COUNT" -gt "$LARGE_DATA_CUTOFF" ]; then
-            msa_mode_sh="fast_cdn"
+            msa_mode_sh="fast_codon"
         else
-            msa_mode_sh="accurate_cdn"
+            msa_mode_sh="accurate_codon"
         fi
     else
         msa_mode_sh="$msa_mode"
     fi
 
     # 1. ALIGNMENT LOGIC
-    if [ \$msa_mode_sh = "fast_cdn" ]; then
+    if [ \$msa_mode_sh = "fast_codon" ]; then
         # ================= STRATEGY A: BIG DATA WORKFLOW =================
         echo "[1/5] Strategy: BIG DATA (> $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
@@ -428,7 +419,7 @@ process MSA {
         # Cleanup intermediate files TODO uncomment
         # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
 
-    elif [ \$msa_mode_sh = "accurate_cdn" ]; then
+    elif [ \$msa_mode_sh = "accurate_codon" ]; then
         # ================= STRATEGY B: PURE MACSE =================
         echo "[1/5] Strategy: PURE MACSE (< $LARGE_DATA_CUTOFF sequences)" >> $aln_logfile
         
@@ -486,7 +477,7 @@ process MSA {
     # If a sequence is mostly 'NNN' (from your sanitizer), you might want to know.
     echo "--- Ambiguity Check (Sequences with >20% Ns) ---"
     seqkit fx2tab --name --gc --avg-qual "msa_nuc.fasta" | awk '\$4 > 20 {print \$1 " has high N content"}' >> $aln_logfile
-    num_seqs=\$(grep -c "^>" msa_nuc.fasta)
+    new_num_seqs=\$(grep -c "^>" msa_nuc.fasta)
     """
 }
 
@@ -503,7 +494,7 @@ process BUILD_TREE {
     val run_shrinking
 
     output:
-    tuple val(id), path("tree.nwk"), path("iqtree.report")
+    tuple val(id), path(sequences), path("tree.nwk"), path("iqtree.report")
 
     errorStrategy 'retry'
     maxRetries 3
@@ -548,7 +539,7 @@ process ASR {
     cpus params.threads
 
     input:
-    tuple val(id), path(sequences), path(tree)
+    tuple val(id), path(sequences), path(tree), path(iqtree_report)
     val model
 
     output:
@@ -589,26 +580,24 @@ process MUT_EXTRACTION {
     input:
     tuple val(id), path(sequences), path(tree), path(internal_states), path(rates)
     val gencode
-    val exclude_cons_sites
-    val cons_cat_cutoff
     val proba_arg
-    val proba_cutoff
-    val save_exp_mutations
     val uncertainty_coef
+    val cons_cat_cutoff // TODO pass list of categories instead of single value
+    val save_exp_mutations
 
     output:
-    tuple val(id), path("observed_mutations.tsv"), path("expected_freqs.tsv"), path("mut_extraction.log")
+    tuple val(id), path("observed_mutations.tsv"), path("expected_freqs.tsv"), path("mut_extraction.log"), emit mutations
     tuple val(id), path(sequences), path(tree)
     path optional "expected_mutations.tsv"
 
     script:
     """
-    ARGS="--no-mutspec --outdir mout --threads ${task.cpus} --syn --syn4f --all --nonsyn"
-    if [ $exclude_cons_sites = true ]; then
+    ARGS="--gencode $gencode --no-mutspec --outdir mout --threads ${task.cpus} --syn --syn4f --all --nonsyn"
+    if [ $cons_cat_cutoff -gt 0 ]; then
         \$ARGS="\$ARGS --rates $rates --cat-cutoff $cons_cat_cutoff"
     fi
     if [ $proba_arg = "true" ]; then
-        \$ARGS="\$ARGS --proba --pcutoff $proba_cutoff"
+        \$ARGS="\$ARGS --proba --pcutoff 0.3"
     fi
     if [ $save_exp_mutations = "true" ]; then
         \$ARGS="\$ARGS --save-exp-muts"
@@ -620,7 +609,7 @@ process MUT_EXTRACTION {
     fi
 
     collect_mutations.py --tree $tree --states $sequences --states $internal_states \
-        --gencode $gencode \$ARGS 
+        \$ARGS 
 
     mv mout/* .
     mv mutations.tsv observed_mutations.tsv
@@ -629,8 +618,6 @@ process MUT_EXTRACTION {
 }
 
 process DERIVE_SPECTRA {
-
-publishDir params.outdir, overwrite: true, mode: 'copy',
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy'
 
@@ -735,7 +722,8 @@ workflow {
     // check dependencies
     for (dep in ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", 
                  "goalign", "python3", "java", "run_treeshrink.py", 
-                 "nw_reroot", "nw_distance", "nw_prune", "iqtree2"]) {
+                 "nw_reroot", "nw_distance", "nw_prune", "iqtree2", 
+                 "collect_mutations.py", "calculate_mutspec.py"]) {
         if (!commandExists(dep)) {
             log.error "ERROR: Required dependency '${dep}' not found in PATH."
             System.exit(1)
@@ -757,8 +745,8 @@ workflow {
         log.error "ERROR: BLAST database path not specified. Use --db to provide BLAST database."
         System.exit(1)
     }
-    if (!params.msa_mode || !(params.msa_mode in ["auto_cdn", "accurate_cdn", "fast_cdn", "pure_mafft"])) {
-        log.error "ERROR: Invalid MSA mode specified. Use --msa_mode with 'auto_cdn', 'accurate_cdn', 'fast_cdn', or 'pure_mafft'."
+    if (!params.msa_mode || !(params.msa_mode in ["auto_codon", "accurate_codon", "fast_codon", "pure_mafft"])) {
+        log.error "ERROR: Invalid MSA mode specified. Use --msa_mode with 'auto_codon', 'accurate_codon', 'fast_codon', or 'pure_mafft'."
         System.exit(1)
     }
 
@@ -822,7 +810,8 @@ workflow {
     }
 
     MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
-    // FILTER: Terminate if number of sequences is less than CUTOFF after MSA
+
+    // FILTER: Terminate if number of sequences is less than CUTOFF after MSA filtering
     msa_num_verified_ch = MSA.out.filter { id, seq, msa_log, num_seqs ->
         if (num_seqs.toInteger() > params.min_seqs) {
             return true
@@ -830,7 +819,18 @@ workflow {
             log.warn "SKIPPING ${id}: Too low number of sequences for '${id}': ${num_seqs}."
             return false
         }
+    }.map { id, seq, msa_log, num_seqs ->
+        [id, seq]
     }
 
+    BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
 
+    ASR(BUILD_TREE.out, params.model_asr)
+
+    MUT_EXTRACTION(ASR.out, 
+        params.gencode, params.proba_arg, params.uncertainty_coef,
+        params.cons_cat_cutoff, params.save_exp_mutations, 
+    )
+
+    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot)
 }
