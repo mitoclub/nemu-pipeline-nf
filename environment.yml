@@ -11,15 +11,11 @@ dependencies:
   - taxonkit
   - blast                   # BLAST+
   - mafft
+  - macse
   - goalign
   - iqtree=2.2.0
   - newick_utils            # nw_reroot, nw_distance, etc.
   - treeshrink
-  - pandas
-  - numpy
-  - matplotlib
-  - seaborn
-  - biopython
   - pip
   - pip:
-    - pymutspec             # Installs collect_mutations.py, calculate_mutspec.py
+    - pymutspec==0.0.14     # Installs collect_mutations.py, calculate_mutspec.py TODO check env creation again
