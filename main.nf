@@ -109,19 +109,19 @@ process PARSE_SPECIES_NAME {
 
 process PREPARE_TAXONOMY {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
+    publishDir "${params.outdir}/${id}", mode: 'copy' // TODO remove line after debug completion
 
     input:
     tuple val(id), val(species_name), val(sequence)
     path taxdump_dir
 
     output:
-    tuple val(id), path("species.taxid"), path("relatives.taxid"), val(sequence), val(species_name)
+    tuple val(id), path("query.fa"), path("species.taxid"), path("relatives.taxid")
 
     script:
     """
     if [ "${species_name}" = "unknown_species" ]; then
-        touch species.taxid relatives.taxid
+        touch species.taxid relatives.taxid query.fa
         exit 0
     fi
 
@@ -131,48 +131,46 @@ process PREPARE_TAXONOMY {
     echo "Deriving TaxIDs for: \$CLEAN_NAME"
     
     # 1. Get TaxID
-    SPEC_ID=\$(echo "\$CLEAN_NAME" | taxonkit name2taxid | cut -f2)
-    
-    # TODO add here check that SPEC_ID is species taxid if it's subspecies
-    # TODO make sure that same species name will have no bugs
+    echo "\$CLEAN_NAME" | taxonkit name2taxid | taxonkit lineage -i 2 -r -L > taxid_lineage.txt
+    SPEC_ID_RAW=\$(cut -f2 taxid_lineage.txt)
+    SPEC_RANK=\$(cut -f3 taxid_lineage.txt)
 
-    if [ -z "\$SPEC_ID" ]; then
+    if [ -z "\$SPEC_ID_RAW" ]; then
         echo "WARNING: TaxID not found for \$CLEAN_NAME"
-        touch species.taxid relatives.taxid
+        touch species.taxid relatives.taxid query.fa
+        exit 0
+    fi
+    
+    if [ \$SPEC_RANK = "species" ]; then
+        SPEC_ID=\$SPEC_ID_RAW
     else
-        # 2. Get downstream TaxIDs
-        taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
-
-        # 3. Find Family ID
-        FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
-
-        if [ -z "\$FAMILY_ID" ]; then
-            echo "WARNING: Family rank not found for \$CLEAN_NAME"
-            touch relatives.taxid
-        else
-            # 4. Get Family members and exclude self
-            taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
-            grep -vFf species.taxid family_all.taxid > relatives.taxid
+        # Get species from lineage
+        SPEC_ID=\$(echo \$SPEC_ID_RAW | taxonkit lineage | taxonkit reformat -t -f "{s}" | cut -f4)
+        
+        # if spec_id is empty, fallback to original
+        if [ -z "\$SPEC_ID" ]; then
+            SPEC_ID=\$SPEC_ID_RAW
         fi
     fi
-    """
-}
+    
+    # 2. Get downstream TaxIDs
+    taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
 
-process SAVE_QUERY {
-    tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
+    # 3. Find Family ID
+    FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
 
-    input:
-    tuple val(id), path(species_taxid), path(relatives_taxid), val(sequence), val(species_name)
+    if [ -z "\$FAMILY_ID" ]; then
+        echo "WARNING: Family rank not found for \$CLEAN_NAME"
+        touch relatives.taxid
+    else
+        # 4. Get Family members and exclude self
+        taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
+        grep -vFf species.taxid family_all.taxid > relatives.taxid
+    fi
 
-    output:
-    tuple val(id), path("query.fa"), path("species.txt"), path(species_taxid), path(relatives_taxid)
-
-    script:
-    """
-    echo ">${id}" > query.fa
+    # Save query
+    echo ">${id} ${species_name}" > query.fa
     echo "${sequence}" >> query.fa
-    echo "${species_name}" > species.txt
     """
 }
 
@@ -182,7 +180,7 @@ process TBLASTN_AND_FILTER {
     cpus params.threads
 
     input:
-    tuple val(id), path(query), path(species_txt), path(species_taxids), path(relatives_taxids)
+    tuple val(id), path(query), path(species_taxids), path(relatives_taxids)
     val db_path
 
     output:
@@ -321,7 +319,7 @@ process ENCODE_AND_RMDUP {
 }
 
 // THRESHOLDS
-LARGE_DATA_CUTOFF=250    // Switch to Big Data workflow if seqs > this
+LARGE_DATA_CUTOFF=50    // Switch to Big Data workflow if seqs > this
 MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
 MAX_GAP_SEQ=0.50         // Post-filter: Remove SEQS with >50% gaps
 MAX_GAP_SITE=0.50        // Post-filter: Remove SITES (columns) with >50% gaps
@@ -362,27 +360,26 @@ process MSA {
         # Big Data Strategy (Trim -> MacseRepair -> Mafft -> MacseBackTrans)
         macse -prog trimNonHomologousFragments \
             -seq input_clean.fasta -gc_def "$gencode" \
-            -out_NT 1_trimmed.fasta > /dev/null 2>&1
+            -out_NT 1_trimmed.fasta
 
         macse -prog alignSequences \
             -seq 1_trimmed.fasta -gc_def "$gencode" \
             -out_NT 2_repaired.fasta \
-            -max_refine_iter 0 -local_realign_init 0 > /dev/null 2>&1
+            -max_refine_iter 0 -local_realign_init 0
 
         sed 's/-//g' 2_repaired.fasta > 3_ungapped.fasta
 
         macse -prog translateNT2AA \
             -seq 3_ungapped.fasta -gc_def "$gencode" \
-            -out_AA 4_protein.faa > /dev/null 2>&1
+            -out_AA 4_protein.faa
 
         mafft --thread "${task.cpus}" --auto --quiet 4_protein.faa > 5_aligned_protein.faa
 
         macse -prog reportGapsAA2NT \
             -align_AA 5_aligned_protein.faa \
-            -seq 3_ungapped.fasta -gc_def "$gencode" \
-            -out_NT raw_alignment.fasta > /dev/null 2>&1
+            -seq 3_ungapped.fasta -out_NT raw_alignment.fasta
 
-        # Cleanup intermediate files TODO uncomment
+        # Cleanup intermediate files # TODO enable if needed
         # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
 
     elif [ \$msa_mode_sh = "macse" ]; then
@@ -390,7 +387,7 @@ process MSA {
         macse -prog alignSequences \
             -seq input_clean.fasta -gc_def "$gencode" \
             -out_NT raw_alignment.fasta \
-            -out_AA raw_alignment_AA.fasta > /dev/null 2>&1
+            -out_AA raw_alignment_AA.fasta
     
     elif [ \$msa_mode_sh = "mafft" ]; then
         mafft --thread "${task.cpus}" --auto --quiet input_clean.fasta > raw_alignment.fasta
@@ -406,7 +403,7 @@ process MSA {
             -codonForInternalFS "NNN" -codonForExternalFS "---" \
             -out_NT sanitized_alignment.fasta \
             -out_stat_per_seq macse_stat_per_seq.csv \
-            -out_stat_per_site macse_stat_per_site.csv > /dev/null 2>&1
+            -out_stat_per_site macse_stat_per_site.csv
     else
         mv raw_alignment.fasta sanitized_alignment.fasta
     fi
@@ -509,15 +506,23 @@ process DRAW_TREE {
     publishDir "${params.outdir}/${id}", mode: 'copy'
 
     input:
-    tuple val(id), path(tree)
+    tuple val(id), path(tree), path(nodes_mapping)
 
     output:
     path("tree.svg")
+    path("tree.png")
 
     script:
     """
-    # TODO replace branch names
-    nw_display -s -b 'visibility:hidden' -i 'visibility:hidden' $tree > tree.svg
+    ## cut -f2 $nodes_mapping  | cut -d ' ' -f 2-3 | sed 's/[^a-zA-Z0-9\\_]/_/g' | cut -c 1-20 > cleaned_headers.txt
+    
+    cut -f1 -d: $nodes_mapping | sed 's/\t/_/' | cut -c 1-20 > cleaned_headers.txt
+    paste <(cut -f1 $nodes_mapping ) <(cat cleaned_headers.txt) > nodes_mapping_cleaned.txt
+    
+    nw_rename $tree nodes_mapping_cleaned.txt > tree_renamed.nwk
+    nw_display -s -b 'visibility:hidden' -i 'visibility:hidden' tree_renamed.nwk > tree.svg
+    
+    magick tree.svg tree.png # TODO replace by python code (must be less than 80MB of ImageMagick)
     """
 }
 
@@ -550,7 +555,7 @@ process MUT_EXTRACTION {
         ARGS="\$ARGS --proba --pcutoff 0.3"
     fi
     if [ $save_exp_mutations = "true" ]; then
-        ARGS="\$ARGS --save-exp-muts"
+        ARGS="\$ARGS --save-exp-muts" # save it always but gzip table
     fi
     if [ $uncertainty_coef = "true" ]; then
         ARGS="\$ARGS --phylocoef"
@@ -576,6 +581,9 @@ process DERIVE_SPECTRA {
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
     val plot
+    val internal
+    val terminal
+    val branch_spectra
 
     output:
     path "*.tsv"
@@ -586,45 +594,53 @@ process DERIVE_SPECTRA {
     nmuts=`cat $obs_muts | wc -l`
     if [ \$nmuts -lt 2 ]; then
         echo "ERROR: There are no reconstructed mutations." >&2
-        exit 1
+        exit 1 # TODO handle this better
+    fi
+
+    ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
+    if [ $plot = true ]; then
+        ARGS="\$ARGS --plot -x pdf"
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
-    # TODO make --plot option to work
     # TODO replace by pure python code
     
     # Main Calculation
-    calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
-        --exclude OUTGRP,ROOT --mnum192 16 \
-        --proba_cutoff 0.3 --plot -x pdf \
-        --syn --syn4f --all --nonsyn
+    calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS
 
     # Internal
-    if [ "$params.internal" = "true" ]; then
-        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
-            --exclude OUTGRP,ROOT --mnum192 16 \
-            --proba_cutoff 0.3 --plot -x pdf --subset internal \
-            --syn --syn4f --all --nonsyn
+    if [ "$internal" = "true" ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS --subset internal
         # Cleanup
         if [ -f mean_expexted_mutations_internal.tsv ]; then rm mean_expexted_mutations_internal.tsv; fi
     fi
     
     # Terminal
-    if [ "$params.terminal" = "true" ]; then
-        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
-            --exclude OUTGRP,ROOT --mnum192 16 \
-            --proba_cutoff 0.3 --plot -x pdf --subset terminal \
-            --syn --syn4f --all --nonsyn
+    if [ "$terminal" = "true" ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS --subset terminal
         if [ -f mean_expexted_mutations_terminal.tsv ]; then rm mean_expexted_mutations_terminal.tsv; fi
     fi
     
     # Branch Spectra
-    if [ "$params.branch_spectra" = "true" ]; then
-        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \
-            --exclude OUTGRP,ROOT --mnum192 16 \
-            --proba_cutoff 0.3 --branches \
-            --syn --syn4f --all --nonsyn
+    if [ "$branch_spectra" = "true" ]; then
+        calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS --branches
     fi
+    """
+}
+
+process AGGREGATE_OUTPUTS {
+    tag "$id"
+    publishDir "${params.outdir}", mode: 'copy'
+
+    input:
+    tuple val(id), path(spectra)
+
+    output:
+    path("spectra.tsv")
+
+    script:
+    """
+    echo "Aggregating final outputs..."
     """
 }
 
@@ -708,7 +724,6 @@ workflow {
         System.exit(1)
     }
 
-    WRITE_README()
     def seq_counter = 0
     
     raw_sequences = Channel.fromPath(params.input)
@@ -730,19 +745,18 @@ workflow {
             [unique_id, record.header, record.seqString]
         }
 
+    WRITE_README()
     PARSE_SPECIES_NAME(raw_sequences, params.species_name)
     PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
 
     // Filter missing TaxIDs
-    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, sp_tax, rel_tax, seq, sp_name ->
+    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, q, sp_tax, rel_tax ->
         if (sp_tax.size() > 0) return true
-        log.warn "SKIPPING ${id}: No valid TaxID found for species '${sp_name}'."
+        log.warn "SKIPPING ${id}: No valid TaxID found."
         return false
     }
 
-    SAVE_QUERY(tax_verified_ch)
-
-    TBLASTN_AND_FILTER(SAVE_QUERY.out, params.db)
+    TBLASTN_AND_FILTER(tax_verified_ch, params.db)
 
     // Filter missing sequences
     seq_verified_ch = TBLASTN_AND_FILTER.out.filter { id, seq, flt_log ->
@@ -771,7 +785,9 @@ workflow {
     BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
     ASR(BUILD_TREE.out, params.model_asr)
 
+    // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
     just_tree_ch = ASR.out.map { id, seq, tree, anc_state, rates -> [id, tree] }
+                          .join(seq_num_verified_ch.map { id, seq, enc_head, num_seqs -> [id, enc_head] })
     DRAW_TREE(just_tree_ch)
 
     MUT_EXTRACTION(ASR.out, 
@@ -779,5 +795,10 @@ workflow {
         params.cons_cat_cutoff, params.save_exp_mutations, 
     )
 
-    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot)
+    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
+        params.internal, params.terminal, params.branch_spectra
+    )
+
+    // TODO add final outputs aggregation (get species name somewhere or use the header info from raw_sequences!!)
+
 }

@@ -16,6 +16,7 @@ dependencies:
   - iqtree=2.2.0
   - newick_utils            # nw_reroot, nw_distance, etc.
   - treeshrink
+  - imagemagick
   - pip
   - pip:
     - pymutspec==0.0.14     # Installs collect_mutations.py, calculate_mutspec.py TODO check env creation again
