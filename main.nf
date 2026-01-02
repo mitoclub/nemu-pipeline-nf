@@ -1,7 +1,5 @@
 #!/usr/bin/env nextflow
 
-NEMU_VERSION="1.1.0"
-
 /*
  * NeMu: a comprehensive pipeline for accurate reconstruction of neutral mutation spectra from evolutionary data
  * https://doi.org/10.1093/nar/gkae438
@@ -52,21 +50,6 @@ params.internal         = false
 params.terminal         = false
 params.branch_spectra   = false
 
-
-log.info """\
-    N E M U   P I P E L I N E  ${NEMU_VERSION}
-    =================================
-    input file   : ${params.input}
-    outdir       : ${params.outdir}
-    blast db     : ${params.db}
-    min seqs     : ${params.min_seqs}
-    gencode      : ${params.gencode}
-    MSA mode     : ${params.msa_mode}
-    IQ-TREE model: ${params.model}
-    ASR model    : ${params.model_asr}
-    Threads      : ${params.threads}
-    """
-    .stripIndent()
 
 process PARSE_SPECIES_NAME {
     tag "$id"
@@ -295,7 +278,7 @@ process ENCODE_AND_RMDUP {
     tuple val(id), path(sequences), path(flt_log)
 
     output:
-    tuple val(id), path("seqs_unique.fasta"), path("encoded_headers.txt"), env(num_seqs)
+    tuple val(id), path("seqs_unique.fasta"), path("encoded_headers.txt"), env('NUM_SEQS')
 
     script:
     """
@@ -314,15 +297,9 @@ process ENCODE_AND_RMDUP {
     
     # Remove duplicates
     seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
-    num_seqs=\$(grep -c '>' ./seqs_unique.fasta)
+    NUM_SEQS=\$(grep -c '>' ./seqs_unique.fasta)
     """
 }
-
-// THRESHOLDS
-LARGE_DATA_CUTOFF=50    // Switch to Big Data workflow if seqs > this
-MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
-MAX_GAP_SEQ=0.50         // Post-filter: Remove SEQS with >50% gaps
-MAX_GAP_SITE=0.50        // Post-filter: Remove SITES (columns) with >50% gaps
 
 process MSA {
     tag "$id"
@@ -334,9 +311,15 @@ process MSA {
     val msa_mode
 
     output:
-    tuple val(id), path("msa.fasta"), path("alignment.log"), env(new_num_seqs)
+    tuple val(id), path("msa.fasta"), path("alignment.log"), env('NUM_SEQS_FLT')
 
     script:
+    // THRESHOLDS
+    LARGE_DATA_CUTOFF=50    // Switch to Big Data workflow if seqs > this
+    MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
+    MAX_GAP_SEQ=0.50         // Post-filter: Remove SEQS with >50% gaps
+    MAX_GAP_SITE=0.50        // Post-filter: Remove SITES (columns) with >50% gaps
+
     """
     echo "--- STARTING MSA ---" > alignment.log
     echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> alignment.log
@@ -421,15 +404,17 @@ process MSA {
     # N-Content Warning
     seqkit fx2tab --name --gc --avg-qual "msa.fasta" | \
         awk '\$4 > 20 {print \$1 " has high N content"}' >> alignment.log
-    new_num_seqs=\$(grep -c "^>" msa.fasta)
+    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta)
     """
 }
 
-QUANTILE=0.1
 
 process BUILD_TREE {
     tag "$id"
     cpus params.threads
+
+    errorStrategy 'retry'
+    maxRetries 3
 
     input:
     tuple val(id), path(sequences)
@@ -439,10 +424,8 @@ process BUILD_TREE {
     output:
     tuple val(id), path("msa_filtered.fasta"), path("tree.nwk")
 
-    errorStrategy 'retry'
-    maxRetries 3
-
     script:
+    QUANTILE=0.1
     """
     iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
 
@@ -476,15 +459,15 @@ process ASR {
     tag "$id"
     cpus params.threads
 
+    errorStrategy 'retry'
+    maxRetries 3
+
     input:
     tuple val(id), path(sequences), path(tree)
     val model
 
     output:
     tuple val(id), path(sequences), path("final_tree.nwk"), path("iqtree_anc.state"), path("rates.tsv")
-
-    errorStrategy 'retry'
-    maxRetries 3
 
     script:
     """
@@ -641,6 +624,7 @@ process AGGREGATE_OUTPUTS {
     script:
     """
     echo "Aggregating final outputs..."
+    # pure python code would be better
     """
 }
 
@@ -697,13 +681,30 @@ boolean commandExists(String command) {
 workflow {
     // TODO make 2 workflows: main protein and main nucleotide
     
+    NEMU_VERSION="1.1.0"
+
+    log.info """\
+        N E M U   P I P E L I N E  ${NEMU_VERSION}
+        =================================
+        input file   : ${params.input}
+        outdir       : ${params.outdir}
+        blast db     : ${params.db}
+        min seqs     : ${params.min_seqs}
+        gencode      : ${params.gencode}
+        MSA mode     : ${params.msa_mode}
+        IQ-TREE model: ${params.model}
+        ASR model    : ${params.model_asr}
+        Threads      : ${params.threads}
+        """
+        .stripIndent()
+
     // Dependency Checks
     def reqs = ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", "macse",
                 "goalign", "python3", "java", "run_treeshrink.py", 
                 "nw_reroot", "nw_distance", "nw_prune", "iqtree2", 
                 "collect_mutations.py", "calculate_mutspec.py"]
     
-    for (dep in reqs) {
+    reqs.each { dep ->
         if (!commandExists(dep)) {
             log.error "ERROR: Required dependency '${dep}' not found in PATH."
             System.exit(1)
@@ -750,7 +751,7 @@ workflow {
     PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
 
     // Filter missing TaxIDs
-    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, q, sp_tax, rel_tax ->
+    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, _q, sp_tax, _rel_tax ->
         if (sp_tax.size() > 0) return true
         log.warn "SKIPPING ${id}: No valid TaxID found."
         return false
@@ -759,7 +760,7 @@ workflow {
     TBLASTN_AND_FILTER(tax_verified_ch, params.db)
 
     // Filter missing sequences
-    seq_verified_ch = TBLASTN_AND_FILTER.out.filter { id, seq, flt_log ->
+    seq_verified_ch = TBLASTN_AND_FILTER.out.filter { id, seq, _flt_log ->
         if (seq.size() > 0) return true
         log.warn "SKIPPING ${id}: No sequences found."
         return false
@@ -768,7 +769,7 @@ workflow {
     ENCODE_AND_RMDUP(seq_verified_ch)
 
     // Filter Low Count
-    seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, seq, enc_head, num_seqs ->
+    seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
         if (num_seqs.toInteger() > params.min_seqs) return true
         log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
         return false
@@ -776,18 +777,18 @@ workflow {
 
     MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
 
-    msa_num_verified_ch = MSA.out.filter { id, seq, msa_log, num_seqs ->
+    msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
         if (num_seqs.toInteger() > params.min_seqs) return true
         log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
         return false
-    }.map { id, seq, msa_log, num_seqs -> [id, seq] }
+    }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
 
     BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
     ASR(BUILD_TREE.out, params.model_asr)
 
     // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
-    just_tree_ch = ASR.out.map { id, seq, tree, anc_state, rates -> [id, tree] }
-                          .join(seq_num_verified_ch.map { id, seq, enc_head, num_seqs -> [id, enc_head] })
+    just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
+                          .join(seq_num_verified_ch.map { id, _seq, enc_head, _num_seqs -> [id, enc_head] })
     DRAW_TREE(just_tree_ch)
 
     MUT_EXTRACTION(ASR.out, 

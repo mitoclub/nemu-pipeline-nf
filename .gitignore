@@ -4,3 +4,4 @@ test_output*
 .nextflow*
 results
 results_legacy
+.vscode
