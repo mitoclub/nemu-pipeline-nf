@@ -26,9 +26,24 @@ bash test.sh
 ```
 
 
-## Activate environment
+## Build and activate environment
+
+### Mamba
 
 ```bash
-mamba create -f environment.yml -n nemu-pipeline
+mamba create -f environment.yml -n nemu-pipeline --yes
 mamba activate nemu-pipeline
+```
+
+### Apptainer/Singularity
+```bash
+apptainer build nemu-pipeline.sif nemu-pipeline.def
+apptainer exec nemu-pipeline.sif nextflow run /app/main.nf ...
+```
+
+## Docker
+
+```bash
+docker build -t nemu-pipeline:latest .
+docker run -it nemu-pipeline:latest nextflow run /app/main.nf ...
 ```

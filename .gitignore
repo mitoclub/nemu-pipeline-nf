@@ -5,3 +5,7 @@ test_output*
 results
 results_legacy
 .vscode
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+

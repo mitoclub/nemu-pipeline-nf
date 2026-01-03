@@ -14,20 +14,20 @@
 // --- Global Parameters ---
 
 // Inputs/Outputs
-params.input            = "data/proteins.fa"
+params.input            = ""
 params.outdir           = "results"
 
 // Databases & Tools
-params.db               = "${System.getenv('HOME')}/.nuc_db/dolphin"
-params.taxdump          = "${System.getenv('HOME')}/.taxonkit"
+params.db               = ""
+params.taxdump          = ""
 
 // Pipeline Logic
 params.input_type       = "protein"                     // protein or nucleotides
 params.species_name     = false                         // Override species name
-params.gencode          = 2
+params.gencode          = 1
 params.max_target_seqs  = 2000
 params.min_seqs         = 4                             // Min sequences to proceed
-params.threads          = 4
+params.threads          = 1
 
 // MSA & Tree
 params.aligned          = false                         // Nucleotide input is pre-aligned
