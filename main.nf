@@ -22,7 +22,7 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
-params.input_type       = "protein"                     // protein or nucleotides
+params.input_type       = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
 params.species_name     = false                         // Override species name
 params.gencode          = 1
 params.max_target_seqs  = 2000
@@ -30,7 +30,8 @@ params.min_seqs         = 4                             // Min sequences to proc
 params.threads          = 1
 
 // MSA & Tree
-params.aligned          = false                         // Nucleotide input is pre-aligned
+params.outgroup_id      = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
+params.aligned          = false                         // 'nucleotide' input can be pre-aligned
 params.msa_mode         = "auto"                        // auto, macse (accurate codon alignment), mafft_macse, mafft
 params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
 params.model_asr        = "GTR+FO+G4+I"                 // ASR Model (auto = same as tree)
@@ -167,7 +168,8 @@ process TBLASTN_AND_FILTER {
     val db_path
 
     output:
-    tuple val(id), path("sampled_sequences.fasta"), path("filtering_log.txt")
+    tuple val(id), path("sampled_sequences.fasta"), env("OUTGRP_ID"), emit: seqs
+    path "filtering_log.txt"
 
     script:
     """
@@ -261,6 +263,8 @@ with open('extract_coords.txt', 'w') as f:
     " >> filtering_log.txt
     # END OF PYTHON CODE
 
+    OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" filtering_log.txt)
+
     # 4. Extract
     if [ -s extract_coords.txt ]; then
         blastdbcmd -db ${db_path} -entry_batch extract_coords.txt -outfmt %f -out sampled_sequences.fasta
@@ -275,7 +279,7 @@ process ENCODE_AND_RMDUP {
     publishDir "${params.outdir}/${id}", mode: 'copy'
 
     input:
-    tuple val(id), path(sequences), path(flt_log)
+    tuple val(id), path(sequences), val(OUTGRP_ID)
 
     output:
     tuple val(id), path("seqs_unique.fasta"), path("encoded_headers.txt"), env('NUM_SEQS')
@@ -283,11 +287,11 @@ process ENCODE_AND_RMDUP {
     script:
     """
     seqkit replace -p .+ -r "seq_{nr}" -w 0 < $sequences > encoded_raw.fasta
-    if grep -q "Selected Outgroup" $flt_log; then
+    if [ -z "${OUTGRP_ID}" ]; then
+        mv encoded_raw.fasta encoded.fasta
+    else
         outgrp_id=\$(seqkit seq -i -n < ./encoded_raw.fasta | tail -1)
         seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
-    else
-        mv encoded_raw.fasta encoded.fasta
     fi
 
     # Save mapping
@@ -611,6 +615,8 @@ process DERIVE_SPECTRA {
     """
 }
 
+// process AMINO_ACID_STUFF TODO
+
 process AGGREGATE_OUTPUTS {
     tag "$id"
     publishDir "${params.outdir}", mode: 'copy'
@@ -679,24 +685,50 @@ boolean commandExists(String command) {
 }
 
 workflow {
-    // TODO make 2 workflows: main protein and main nucleotide
-    
+       
     NEMU_VERSION="1.1.0"
 
-    log.info """\
-        N E M U   P I P E L I N E  ${NEMU_VERSION}
-        =================================
-        input file   : ${params.input}
-        outdir       : ${params.outdir}
-        blast db     : ${params.db}
-        min seqs     : ${params.min_seqs}
-        gencode      : ${params.gencode}
-        MSA mode     : ${params.msa_mode}
-        IQ-TREE model: ${params.model}
-        ASR model    : ${params.model_asr}
-        Threads      : ${params.threads}
-        """
-        .stripIndent()
+    // help message
+    if (params.help) {
+        println """
+N E M U   P I P E L I N E  ${NEMU_VERSION}
+================================
+A comprehensive pipeline for accurate reconstruction of neutral mutation spectra from evolutionary data.
+https://doi.org/10.1093/nar/gkae438
+
+Usage: nextflow run main.nf --input <input_fasta> [options]
+
+Main options:
+    --input_type           Type of input sequences: 
+                           protein, nucleotide_coding, nucleotide_noncoding (default: protein)
+    --input                Input FASTA file. (required)
+                           If input type is protein, a multi-FASTA with one or several sequences 
+                           required (header format: ">ID [Species name]"). If input type is nucleotide, 
+                           one or several fasta files with orthologous sequences required 
+                           (Outgroup should be specified).
+    --outdir               Output directory (default: results)
+    --gencode              Genetic code table (default: 1)
+
+Options for protein input:
+    --db                   BLAST database path (required for protein input)
+    --taxdump              Taxdump directory path (required for protein input)
+    --species_name         Override species name (default: false)
+    --max_target_seqs      Max target sequences for BLAST (default: 2000)
+    
+Options for nucleotide input:
+    --outgroup_id          Outgroup sequence ID (default: OUTGRP)
+    --aligned              Input sequences are pre-aligned (default: false)
+
+Common options:
+    --msa_mode             MSA mode: auto, macse, mafft_macse, mafft (default: auto)
+    --model                IQ-TREE substitution model (default: GTR+FO+G4+I)
+    --model_asr            ASR substitution model (default: GTR+FO+G4+I)
+    --run_treeshrink       Run TreeShrink to prune long branches (default: true)
+    --threads              Number of threads to use (default: 1)
+    --help                 Show this help message and exit
+        """.stripIndent()
+        System.exit(0)
+    }
 
     // Dependency Checks
     def reqs = ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", "macse",
@@ -716,8 +748,32 @@ workflow {
         log.error "ERROR: Input file not specified. Use --input to provide input FASTA file."
         System.exit(1)
     }
+
+    if (params.input_type == "protein") {
+
+    log.info """\
+        N E M U   P I P E L I N E  ${NEMU_VERSION}
+        ================================
+        input type   : ${params.input_type}
+        input file   : ${params.input}
+        outdir       : ${params.outdir}
+        blast db     : ${params.db}
+        taxdump      : ${params.taxdump}
+        max targets  : ${params.max_target_seqs}
+        gencode      : ${params.gencode}
+        MSA mode     : ${params.msa_mode}
+        IQ-TREE model: ${params.model}
+        ASR model    : ${params.model_asr}
+        Threads      : ${params.threads}
+        """
+        .stripIndent()
+
     if (!params.db || params.db == "") {
         log.error "ERROR: BLAST database path not specified. Use --db to provide BLAST database."
+        System.exit(1)
+    }
+    if (!params.taxdump || params.taxdump == "") {
+        log.error "ERROR: Taxdump directory not specified. Use --taxdump to provide taxdump path."
         System.exit(1)
     }
     if (!params.msa_mode || !(params.msa_mode in ["auto", "macse", "mafft_macse", "mafft"])) {
@@ -746,7 +802,6 @@ workflow {
             [unique_id, record.header, record.seqString]
         }
 
-    WRITE_README()
     PARSE_SPECIES_NAME(raw_sequences, params.species_name)
     PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
 
@@ -760,13 +815,53 @@ workflow {
     TBLASTN_AND_FILTER(tax_verified_ch, params.db)
 
     // Filter missing sequences
-    seq_verified_ch = TBLASTN_AND_FILTER.out.filter { id, seq, _flt_log ->
-        if (seq.size() > 0) return true
+    fasta_verified_ch = TBLASTN_AND_FILTER.out.seqs.filter { id, fasta, outgrp_id ->
+        if (outgrp_id == '') log.warn "WARNING: Outgroup not found for ${id}"
+        if (fasta != null && fasta.size() > 0) return true
         log.warn "SKIPPING ${id}: No sequences found."
         return false
     }
 
-    ENCODE_AND_RMDUP(seq_verified_ch)
+    } // end of protein input condition
+    else if (params.input_type == "nucleotide_coding" || params.input_type == "nucleotide_noncoding") {
+    
+        log.info """\
+        N E M U   P I P E L I N E  ${NEMU_VERSION}
+        ================================
+        input type   : ${params.input_type}
+        input file   : ${params.input}
+        outdir       : ${params.outdir}
+        gencode      : ${params.gencode}
+        aligned      : ${params.aligned}
+        MSA mode     : ${params.msa_mode}
+        IQ-TREE model: ${params.model}
+        ASR model    : ${params.model_asr}
+        Threads      : ${params.threads}
+        """
+        .stripIndent()
+
+        def seq_counter = 0
+        input_fasta = Channel.fromPath(params.input)//.buffer(size: 3)
+        fasta_verified_ch = input_fasta.map { file ->
+            def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
+            def count = ++seq_counter
+            def name_indexed = "${count}__${name}"
+
+            // Check if the file contains the outgroup_id
+            def contains_outgroup = file.text.contains(params.outgroup_id)
+            if (!contains_outgroup) {
+                log.warn "Outgroup ID '${params.outgroup_id}' not found in the file ${name}. Continue anyway."
+            }
+            // TODO verify fasta nucleotide content
+            [name_indexed, file, params.outgroup_id]
+        }
+    }
+    else {
+        log.error "ERROR: Invalid input type specified. Use --input_type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
+        System.exit(1)
+    }
+
+    ENCODE_AND_RMDUP(fasta_verified_ch)
 
     // Filter Low Count
     seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
@@ -775,14 +870,24 @@ workflow {
         return false
     }
 
-    MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
+    // in case of protein input, alignment is always needed
+    def aligned = (params.input_type == "protein") ? false : params.aligned
 
-    msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-        if (num_seqs.toInteger() > params.min_seqs) return true
-        log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
-        return false
-    }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+    if (aligned == true) {
+        msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
+            [id, seq]
+        }
+    } else {
+        MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
 
+        msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
+            if (num_seqs.toInteger() > params.min_seqs) return true
+            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
+            return false
+        }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+    }
+
+    WRITE_README()
     BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
     ASR(BUILD_TREE.out, params.model_asr)
 
