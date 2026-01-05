@@ -23,7 +23,7 @@ params.taxdump          = ""
 
 // Pipeline Logic
 params.input_type       = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
-params.species_name     = false                         // Override species name
+params.species_name     = ""                            // Override species name
 params.gencode          = 1
 params.max_target_seqs  = 2000
 params.min_seqs         = 4                             // Min sequences to proceed
@@ -32,21 +32,21 @@ params.threads          = 1
 // MSA & Tree
 params.outgroup_id      = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
 params.aligned          = false                         // 'nucleotide' input can be pre-aligned
-params.msa_mode         = "auto"                        // auto, macse (accurate codon alignment), mafft_macse, mafft
+params.msa_mode         = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
+params.treefile        = ""                            // Provide pre-computed tree path to skip tree building
 params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
-params.model_asr        = "GTR+FO+G4+I"                 // ASR Model (auto = same as tree)
+params.model_asr        = "GTR+FO+G4+I"                 // ASR Model
 params.run_treeshrink   = true                          // Run TreeShrink to prune long branches
 
 // Mutation Extraction
 params.cons_cat_cutoff  = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
 params.proba_arg        = true                          // Use probabilities
 params.uncertainty_coef = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
-params.save_exp_mutations = false
 
 // Spectra Calculation
 params.plot             = false                         // Generate plots
 
-// Subsets to calculate
+// Subsets of mutations to derive spectra for
 params.internal         = false
 params.terminal         = false
 params.branch_spectra   = false
@@ -69,7 +69,7 @@ process PARSE_SPECIES_NAME {
     import sys
 
     g_spec = "${global_species}"
-    if g_spec and g_spec != "false" and g_spec != "":
+    if g_spec and g_spec != "false":
         print(g_spec, end='')
         sys.exit(0)
 
@@ -424,6 +424,7 @@ process BUILD_TREE {
     tuple val(id), path(sequences)
     val model
     val run_shrinking
+    path treefile  // can be error due to automatic path existence check !!!!!! TODO fix this error
 
     output:
     tuple val(id), path("msa_filtered.fasta"), path("tree.nwk")
@@ -431,25 +432,31 @@ process BUILD_TREE {
     script:
     QUANTILE=0.1
     """
-    iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
-
-    nseq=\$(grep -c '>' $sequences)
-    if [ $run_shrinking = true ] && [ \$nseq -gt 10 ]; then
-        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
-        mv treeshrink.treefile treeshrink.nwk
+    if [ "${treefile}" != "" ]; then
+        echo "Using provided treefile: ${treefile}"
+        cp ${treefile} tree.nwk
     else
-        mv ml.treefile treeshrink.nwk
-    fi
+        echo "Building tree de novo..."
+        iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
 
-    # Check outgroup "quality"
-    nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
-    
-    # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
-    head -n 1 branches.txt >> branches.head1.txt
-    if grep -q OUTGRP branches.head1.txt; then
-        nw_reroot -l treeshrink.nwk OUTGRP > tree.nwk
-    else
-        nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree.nwk
+        nseq=\$(grep -c '>' $sequences)
+        if [ $run_shrinking = true ] && [ \$nseq -gt 10 ]; then
+            run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
+            mv treeshrink.treefile treeshrink.nwk
+        else
+            mv ml.treefile treeshrink.nwk
+        fi
+
+        # Check outgroup "quality"
+        nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
+        
+        # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
+        head -n 1 branches.txt >> branches.head1.txt
+        if grep -q OUTGRP branches.head1.txt; then
+            nw_reroot -l treeshrink.nwk OUTGRP > tree.nwk
+        else
+            nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree.nwk
+        fi
     fi
 
     # drop sequences not present in the tree
@@ -524,25 +531,21 @@ process MUT_EXTRACTION {
     val proba_arg
     val uncertainty_coef
     val cons_cat_cutoff 
-    val save_exp_mutations
 
     output:
     tuple val(id), path("observed_mutations.tsv"), path("expected_freqs.tsv"), emit: mutations
     tuple val(id), path(sequences), path(tree), path("mut_extraction.log")
-    path "expected_mutations.tsv", optional: true
+    path "expected_mutations.tsv.gz"
 
     script:
     """
     # --threads ${task.cpus}
-    ARGS="--gencode $gencode --no-mutspec --outdir mout --syn --syn4f --nonsyn"
+    ARGS="--gencode $gencode --no-mutspec --outdir mout --syn --syn4f --nonsyn --save-exp-muts"
     if [ $cons_cat_cutoff -gt 0 ]; then
         ARGS="\$ARGS --rates $rates --cat-cutoff $cons_cat_cutoff"
     fi
     if [ $proba_arg = "true" ]; then
         ARGS="\$ARGS --proba --pcutoff 0.3"
-    fi
-    if [ $save_exp_mutations = "true" ]; then
-        ARGS="\$ARGS --save-exp-muts" # save it always but gzip table
     fi
     if [ $uncertainty_coef = "true" ]; then
         ARGS="\$ARGS --phylocoef"
@@ -558,6 +561,7 @@ process MUT_EXTRACTION {
     mv mout/* .
     mv mutations.tsv observed_mutations.tsv
     mv run.log mut_extraction.log
+    gzip expected_mutations.tsv
     """
 }
 
@@ -581,7 +585,7 @@ process DERIVE_SPECTRA {
     nmuts=`cat $obs_muts | wc -l`
     if [ \$nmuts -lt 2 ]; then
         echo "ERROR: There are no reconstructed mutations." >&2
-        exit 1 # TODO handle this better
+        exit 1 # TODO handle this better check line num in the nextflow level
     fi
 
     ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
@@ -618,19 +622,42 @@ process DERIVE_SPECTRA {
 // process AMINO_ACID_STUFF TODO
 
 process AGGREGATE_OUTPUTS {
-    tag "$id"
     publishDir "${params.outdir}", mode: 'copy'
 
     input:
-    tuple val(id), path(spectra)
+    path 'spectrum'
 
     output:
-    path("spectra.tsv")
+    path("spectra_total.tsv")
 
     script:
     """
     echo "Aggregating final outputs..."
-    # pure python code would be better
+    python3 -c "
+import pandas as pd
+import glob
+all_spectra = []
+for file in glob.glob('spectrum*'):
+    df = pd.read_csv(file, sep='\\t')
+    #species_name = file.split('/')[-2]  # Assuming structure: outdir/species/ms12syn.tsv TODO fix
+    species_name = file
+    all_spectra.append(df.assign(Species=species_name))
+final_df = pd.concat(all_spectra, ignore_index=True)
+final_df.to_csv('spectra_total.tsv', sep='\\t', index=False)
+    "
+    """
+}
+
+process CHECK_INPUT_TYPE {
+    input:
+    path fasta
+
+    output:
+    tuple path(fasta), env("TYPE")
+
+    script:
+    """
+    TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
     """
 }
 
@@ -644,6 +671,8 @@ process WRITE_README {
 """
 cat > readme.txt <<- EOM
 Output structure:
+
+TODO update after all changes
 
 .
 ├── final_tree.nwk						# Final phylogenetic tree
@@ -699,33 +728,56 @@ https://doi.org/10.1093/nar/gkae438
 Usage: nextflow run main.nf --input <input_fasta> [options]
 
 Main options:
-    --input_type           Type of input sequences: 
-                           protein, nucleotide_coding, nucleotide_noncoding (default: protein)
-    --input                Input FASTA file. (required)
-                           If input type is protein, a multi-FASTA with one or several sequences 
-                           required (header format: ">ID [Species name]"). If input type is nucleotide, 
-                           one or several fasta files with orthologous sequences required 
-                           (Outgroup should be specified).
-    --outdir               Output directory (default: results)
-    --gencode              Genetic code table (default: 1)
-
-Options for protein input:
-    --db                   BLAST database path (required for protein input)
-    --taxdump              Taxdump directory path (required for protein input)
-    --species_name         Override species name (default: false)
-    --max_target_seqs      Max target sequences for BLAST (default: 2000)
-    
-Options for nucleotide input:
-    --outgroup_id          Outgroup sequence ID (default: OUTGRP)
-    --aligned              Input sequences are pre-aligned (default: false)
+    --input_type STRING     Type of input sequences: 
+                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.input_type})
+    --input FILE            Input FASTA file (required)
+                            If input type is protein, a multi-FASTA with one or several sequences 
+                            required (header format: ">ID [Species name]"). If input type 
+                            is nucleotide, one or several fasta files with orthologous 
+                            sequences (including outgroup) required 
+    --outdir DIR            Output directory (default: ${params.outdir})
+    --gencode NUM           Genetic code table (default: ${params.gencode})
+                            Used for codon-aware alignment and annotation of mutations
 
 Common options:
-    --msa_mode             MSA mode: auto, macse, mafft_macse, mafft (default: auto)
-    --model                IQ-TREE substitution model (default: GTR+FO+G4+I)
-    --model_asr            ASR substitution model (default: GTR+FO+G4+I)
-    --run_treeshrink       Run TreeShrink to prune long branches (default: true)
-    --threads              Number of threads to use (default: 1)
-    --help                 Show this help message and exit
+    --threads NUM           Number of threads to use (default: ${params.threads})
+    --help                  Show this help message and exit
+
+Options for protein input:
+    --db PATH               BLAST database path (required for protein input)
+    --taxdump DIR           Taxdump directory path (required for protein input)
+                            TODO integrate to the container
+    --species_name STRING   Override species name. Useful when you work with proteins 
+                            from single species
+    --max_target_seqs NUM   Max target sequences for BLAST (default: ${params.max_target_seqs})
+                            tblastn will collect no more than this number of sequences
+    
+Options for nucleotide input:
+    --outgroup_id STRING    Outgroup sequence ID (default: ${params.outgroup_id})
+                            Specify outgroup sequence ID in the alignment for rooting the tree
+    --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
+
+Options for MSA & Phylogeny:
+    --msa_mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msa_mode})
+    --min_seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.min_seqs})
+    --treefile FILE         Input tree file (optional; default: build tree de novo)
+    --model STRING          IQ-TREE substitution model (default: ${params.model})
+    --model_asr STRING      ASR substitution model (default: ${params.model_asr})
+    --run_treeshrink BOOL   Run TreeShrink to prune long branches (default: ${params.run_treeshrink})
+
+Options for Mutation Extraction:
+    --cons_cat_cutoff NUM   Conservation category cutoff for mutation extraction (default: ${params.cons_cat_cutoff})
+                            0 = no cutoff; only mutations in sites with rate category 
+                            less than or equal to this value will be used
+    --proba_arg BOOL        Use probabilities in mutation extraction (default: ${params.proba_arg})
+    --uncertainty_coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
+                            (default: ${params.uncertainty_coef})
+
+Options for Mutation Spectra Derivation:
+    --plot BOOL             Generate barcharts of mutation spectra (default: ${params.plot})
+    --internal BOOL         Derive spectra for internal branches (default: ${params.internal})
+    --terminal BOOL         Derive spectra for terminal branches (default: ${params.terminal})
+    --branch_spectra BOOL   Derive spectra for individual branches (default: ${params.branch_spectra})
         """.stripIndent()
         System.exit(0)
     }
@@ -738,15 +790,19 @@ Common options:
     
     reqs.each { dep ->
         if (!commandExists(dep)) {
-            log.error "ERROR: Required dependency '${dep}' not found in PATH."
+            log.error "Required dependency '${dep}' not found in PATH."
             System.exit(1)
         }
     }
 
-    // check params TODO check file existence
-    if (!params.input || params.input == "") {
-        log.error "ERROR: Input file not specified. Use --input to provide input FASTA file."
-        System.exit(1)
+    def combined = ["Input file": params.input,
+                    "BLAST database": params.db + ".ndb",
+                    "Taxdump directory": params.taxdump]
+    combined.each { label, path ->
+        if (!path || path == "" || !file(path).exists()) {
+            log.error "${label} path '${path}' is empty or does not exist."
+            System.exit(1)
+        }
     }
 
     if (params.input_type == "protein") {
@@ -769,20 +825,20 @@ Common options:
         .stripIndent()
 
     if (!params.db || params.db == "") {
-        log.error "ERROR: BLAST database path not specified. Use --db to provide BLAST database."
+        log.error "BLAST database path not specified. Use --db to provide BLAST database."
         System.exit(1)
     }
     if (!params.taxdump || params.taxdump == "") {
-        log.error "ERROR: Taxdump directory not specified. Use --taxdump to provide taxdump path."
+        log.error "Taxdump directory not specified. Use --taxdump to provide taxdump path."
         System.exit(1)
     }
     if (!params.msa_mode || !(params.msa_mode in ["auto", "macse", "mafft_macse", "mafft"])) {
-        log.error "ERROR: Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
+        log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
         System.exit(1)
     }
 
     def seq_counter = 0
-    
+    // TODO add species name to id ???
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
@@ -822,8 +878,7 @@ Common options:
         return false
     }
 
-    } // end of protein input condition
-    else if (params.input_type == "nucleotide_coding" || params.input_type == "nucleotide_noncoding") {
+    } else if (params.input_type == "nucleotide_coding" || params.input_type == "nucleotide_noncoding") {
     
         log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
@@ -841,8 +896,15 @@ Common options:
         .stripIndent()
 
         def seq_counter = 0
-        input_fasta = Channel.fromPath(params.input)//.buffer(size: 3)
-        fasta_verified_ch = input_fasta.map { file ->
+        input_fasta = Channel.fromPath(params.input)
+        input_fasta_nuc = CHECK_INPUT_TYPE(input_fasta).out.filter { 
+            fasta, type ->
+            if (type == "DNA") return true
+            log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING."
+            return false
+        }.map { fasta, _type -> fasta }
+
+        fasta_verified_ch = input_fasta_nuc.map { file ->
             def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
             def count = ++seq_counter
             def name_indexed = "${count}__${name}"
@@ -852,12 +914,11 @@ Common options:
             if (!contains_outgroup) {
                 log.warn "Outgroup ID '${params.outgroup_id}' not found in the file ${name}. Continue anyway."
             }
-            // TODO verify fasta nucleotide content
             [name_indexed, file, params.outgroup_id]
         }
     }
     else {
-        log.error "ERROR: Invalid input type specified. Use --input_type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
+        log.error "Invalid input type specified. Use --input_type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
         System.exit(1)
     }
 
@@ -888,7 +949,19 @@ Common options:
     }
 
     WRITE_README()
-    BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+
+    // Build or use user-provided tree
+    treefile = ""
+    if (params.treefile && params.treefile != "") {
+        if (!file(params.treefile).exists()) {
+            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
+        } else {
+            log.info "Using user-provided tree file: ${params.treefile}"
+            treefile = params.treefile
+        }
+    }
+    BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink, treefile)
+
     ASR(BUILD_TREE.out, params.model_asr)
 
     // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
@@ -898,13 +971,14 @@ Common options:
 
     MUT_EXTRACTION(ASR.out, 
         params.gencode, params.proba_arg, params.uncertainty_coef,
-        params.cons_cat_cutoff, params.save_exp_mutations, 
+        params.cons_cat_cutoff,
     )
 
     DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
         params.internal, params.terminal, params.branch_spectra
     )
 
-    // TODO add final outputs aggregation (get species name somewhere or use the header info from raw_sequences!!)
-
+    // // final outputs aggregation TODO move to separate workflow??
+    // spectra = Channel.fromPath( "${params.outdir}/*/ms12syn.tsv" )
+    // AGGREGATE_OUTPUTS(spectra)
 }
