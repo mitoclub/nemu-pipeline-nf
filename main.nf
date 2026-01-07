@@ -52,45 +52,6 @@ params.terminal         = false
 params.branch_spectra   = false
 
 
-process PARSE_SPECIES_NAME {
-    tag "$id"
-
-    input:
-    tuple val(id), val(header), val(sequence)
-    val global_species
-
-    output:
-    tuple val(id), stdout, val(sequence)
-
-    script:
-    """
-    #!/usr/bin/env python3
-    import re
-    import sys
-
-    g_spec = "${global_species}"
-    if g_spec and g_spec != "false":
-        print(g_spec, end='')
-        sys.exit(0)
-
-    header = "${header}"
-    species = "unknown_species"
-
-    # Try Uniprot style: OS=Homo sapiens
-    m_os = re.search(r'OS=([a-zA-Z0-9_ ]+)', header)
-    if m_os:
-        species = m_os.group(1).strip()
-    else:
-        # Try NCBI style: [Homo sapiens]
-        # Double backslashes are needed for Groovy string interpolation
-        m_br = re.search(r'\\[([a-zA-Z0-9_ ]+)\\]', header)
-        if m_br:
-            species = m_br.group(1).strip()
-    
-    print(species, end='')
-    """
-}
-
 process PREPARE_TAXONOMY {
     tag "$id"
     publishDir "${params.outdir}/${id}", mode: 'copy' // TODO remove line after debug completion
@@ -426,7 +387,7 @@ process BUILD_TREE {
     val run_shrinking
 
     output:
-    tuple val(id), path("msa_filtered.fasta"), path("tree.nwk")
+    tuple val(id), path("msa_filtered.fasta"), path("tree_rerooted.nwk")
 
     script:
     QUANTILE=0.1
@@ -594,7 +555,7 @@ process DERIVE_SPECTRA {
     val branch_spectra
 
     output:
-    path "ms12syn_labeled.tsv", emit: syn_spectrum
+    path "ms12syn_labeled.txt", emit: syn_spectrum
     path "*.tsv"
     path "*.png", optional: true
 
@@ -640,7 +601,7 @@ process DERIVE_SPECTRA {
 import pandas as pd
 df = pd.read_csv('ms12syn.tsv', sep='\\t')
 df['QueryId'] = '${id}'
-df.to_csv('ms12syn_labeled.tsv', sep='\\t', index=False)
+df.to_csv('ms12syn_labeled.txt', sep='\\t', index=False)
     "
     """
 }
@@ -844,14 +805,17 @@ Options for Mutation Spectra Derivation:
     }
 
     def seq_counter = 0
-    // TODO add species name to id ??? YES
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
             def seq = record.seqString.toUpperCase()
+            if (seq.length() < 30) {
+                log.warn "SKIPPING ${record.id}: Sequence too short (${seq.length()})."
+                return false
+            }
             if (seq =~ /[EFILPQZ]/) return true
             def dna_count = seq.count('A') + seq.count('C') + seq.count('G') + seq.count('T') + seq.count('N')
-            if (seq.length() > 0 && (dna_count / seq.length()) > 0.95) {
+            if ((dna_count / seq.length()) > 0.95) {
                 log.warn "SKIPPING ${record.id}: Looks like DNA."
                 return false
             }
@@ -859,13 +823,32 @@ Options for Mutation Spectra Derivation:
         }
         .map { record ->
             def count = ++seq_counter
-            def clean_original_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9\.]/, '_')            
-            def unique_id = "${count}__${clean_original_id}"
-            [unique_id, record.header, record.seqString]
+            def clean_original_id = record.id.split()[0].replaceAll(/[^a-zA-Z0-9\.]/, '_')
+            // parse species name from header if not provided by user
+            // species name patterns: ">ID gene name [species name]"
+            def species = params.species_name
+            if (!params.species_name) {
+                def sp_match = record.header =~ /\[([^\]]+)\]/
+                if (sp_match) {
+                    species = sp_match[0][1]
+                } else {
+                    log.warn "SKIPPING ${record.id}: Species name not found in header. It must be provided in square brackets [Species name]."
+                    species = "unknown_species"
+                }
+            }
+            def species_cleaned = species.replaceAll(/[^a-zA-Z0-9\_\-]/, '_')
+            def unique_id = "${count}__${clean_original_id}__${species_cleaned}"
+            [unique_id, species, record.seqString]
+        }.filter { _id, species, _seq ->
+            return species != "unknown_species"
         }
 
-    PARSE_SPECIES_NAME(raw_sequences, params.species_name)
-    PREPARE_TAXONOMY(PARSE_SPECIES_NAME.out, params.taxdump)
+    // show parsed sequences
+    raw_sequences.view { id, species, seq ->
+        "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
+    }
+
+    PREPARE_TAXONOMY(raw_sequences, params.taxdump)
 
     // Filter missing TaxIDs
     tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, _q, sp_tax, _rel_tax ->
@@ -901,10 +884,13 @@ Options for Mutation Spectra Derivation:
         """
         .stripIndent()
 
-        // TODO countFasta > 10? ADD
-
         def seq_counter = 0
         input_fasta = Channel.fromPath(params.input)
+            .filter { fasta -> 
+            if (fasta.countFasta() > params.min_seqs) return true
+            log.warn "Input file ${fasta.getName()} has less than ${params.min_seqs} sequences. SKIPPING."
+            return false
+        }
         input_fasta_nuc = CHECK_INPUT_TYPE(input_fasta).out.filter { 
             fasta, type ->
             if (type == "DNA") return true
