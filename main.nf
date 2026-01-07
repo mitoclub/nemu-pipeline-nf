@@ -424,7 +424,6 @@ process BUILD_TREE {
     tuple val(id), path(sequences)
     val model
     val run_shrinking
-    path treefile  // can be error due to automatic path existence check !!!!!! TODO fix this error
 
     output:
     tuple val(id), path("msa_filtered.fasta"), path("tree.nwk")
@@ -432,37 +431,50 @@ process BUILD_TREE {
     script:
     QUANTILE=0.1
     """
-    if [ "${treefile}" != "" ]; then
-        echo "Using provided treefile: ${treefile}"
-        cp ${treefile} tree.nwk
+    echo "Building tree de novo..."
+    iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
+
+    nseq=\$(grep -c '>' $sequences)
+    if [ $run_shrinking = true ] && [ \$nseq -gt 10 ]; then
+        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
+        mv treeshrink.treefile treeshrink.nwk
     else
-        echo "Building tree de novo..."
-        iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
+        mv ml.treefile treeshrink.nwk
+    fi
 
-        nseq=\$(grep -c '>' $sequences)
-        if [ $run_shrinking = true ] && [ \$nseq -gt 10 ]; then
-            run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
-            mv treeshrink.treefile treeshrink.nwk
-        else
-            mv ml.treefile treeshrink.nwk
-        fi
-
-        # Check outgroup "quality"
-        nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
-        
-        # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
-        head -n 1 branches.txt >> branches.head1.txt
-        if grep -q OUTGRP branches.head1.txt; then
-            nw_reroot -l treeshrink.nwk OUTGRP > tree.nwk
-        else
-            nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree.nwk
-        fi
+    # Check outgroup "quality"
+    nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
+    
+    # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
+    head -n 1 branches.txt >> branches.head1.txt
+    if grep -q OUTGRP branches.head1.txt; then
+        nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
+    else
+        nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
     fi
 
     # drop sequences not present in the tree
-    nw_labels -I tree.nwk  > leaves.txt
+    nw_labels -I tree_rerooted.nwk  > leaves.txt
     seqkit grep -f leaves.txt -w 0 $sequences > msa_filtered.fasta
     seqkit stats $sequences msa_filtered.fasta # sanity check
+    """
+}
+
+process INCLUDE_USER_TREE {
+    tag "$id"
+
+    input:
+    tuple val(id), path(sequences)
+    path treefile 
+
+    output:
+    tuple val(id), path("msa_filtered.fasta"), path(treefile)
+
+    script:
+    """
+    # drop sequences not present in the tree
+    nw_labels -I "$treefile"  > leaves.txt
+    seqkit grep -f leaves.txt -w 0 $sequences > msa_filtered.fasta
     """
 }
 
@@ -478,7 +490,7 @@ process ASR {
     val model
 
     output:
-    tuple val(id), path(sequences), path("final_tree.nwk"), path("iqtree_anc.state"), path("rates.tsv")
+    tuple val(id), path(sequences), path("tree.nwk"), path("iqtree_anc.state"), path("rates.tsv")
 
     script:
     """
@@ -486,9 +498,9 @@ process ASR {
     mv asr.rate rates.tsv
 
     if grep -q OUTGRP asr.treefile; then
-        nw_reroot -l asr.treefile OUTGRP | sed 's/;/ROOT;/' > final_tree.nwk
+        nw_reroot -l asr.treefile OUTGRP | sed 's/;/ROOT;/' > tree.nwk
     else
-        nw_reroot asr.treefile | sed 's/;/ROOT;/' > final_tree.nwk
+        nw_reroot asr.treefile | sed 's/;/ROOT;/' > tree.nwk
     fi
 
     iqtree_states_add_part.py asr.state iqtree_anc.state
@@ -497,7 +509,8 @@ process ASR {
 
 process DRAW_TREE {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
+    publishDir "${params.outdir}/${id}", mode: 'copy', 
+        saveAs: {filename -> "images/$filename"}
 
     input:
     tuple val(id), path(tree), path(nodes_mapping)
@@ -567,7 +580,11 @@ process MUT_EXTRACTION {
 
 process DERIVE_SPECTRA {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
+    publishDir "${params.outdir}/${id}", mode: 'copy',
+        saveAs: {filename ->
+            if (filename =~ /.*.png$/) "images/$filename"
+            else if (filename =~ /.*.tsv$/) "$filename"
+        }
 
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
@@ -577,8 +594,9 @@ process DERIVE_SPECTRA {
     val branch_spectra
 
     output:
+    path "ms12syn_labeled.tsv", emit: syn_spectrum
     path "*.tsv"
-    path "*.pdf", optional: true
+    path "*.png", optional: true
 
     script:
     """
@@ -590,7 +608,7 @@ process DERIVE_SPECTRA {
 
     ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
     if [ $plot = true ]; then
-        ARGS="\$ARGS --plot -x pdf"
+        ARGS="\$ARGS --plot -x png"
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
@@ -616,37 +634,18 @@ process DERIVE_SPECTRA {
     if [ "$branch_spectra" = "true" ]; then
         calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS --branches
     fi
+     
+    # add column $id to output tsv file
+    python3 -c "
+import pandas as pd
+df = pd.read_csv('ms12syn.tsv', sep='\\t')
+df['QueryId'] = '${id}'
+df.to_csv('ms12syn_labeled.tsv', sep='\\t', index=False)
+    "
     """
 }
 
 // process AMINO_ACID_STUFF TODO
-
-process AGGREGATE_OUTPUTS {
-    publishDir "${params.outdir}", mode: 'copy'
-
-    input:
-    path 'spectrum'
-
-    output:
-    path("spectra_total.tsv")
-
-    script:
-    """
-    echo "Aggregating final outputs..."
-    python3 -c "
-import pandas as pd
-import glob
-all_spectra = []
-for file in glob.glob('spectrum*'):
-    df = pd.read_csv(file, sep='\\t')
-    #species_name = file.split('/')[-2]  # Assuming structure: outdir/species/ms12syn.tsv TODO fix
-    species_name = file
-    all_spectra.append(df.assign(Species=species_name))
-final_df = pd.concat(all_spectra, ignore_index=True)
-final_df.to_csv('spectra_total.tsv', sep='\\t', index=False)
-    "
-    """
-}
 
 process CHECK_INPUT_TYPE {
     input:
@@ -674,34 +673,41 @@ Output structure:
 
 TODO update after all changes
 
-.
-├── final_tree.nwk						# Final phylogenetic tree
-├── seqs_unique.fasta					# Filtered orthologous sequences
-├── msa_nuc.fasta						# Verified multiple sequence alignment
-├── headers_mapping.txt					# Encoded headers of sequences
-├── encoded_headers.txt					# Encoded headers of sequences (v2 for different versions of input)
-├── logs/
-│   ├── report.blast					# Tblastn output during orthologs search
-│   ├── *.taxids						# Taxids used in taxa-specific blasing in nt; relatives.taxids contains 
-│	│									# 	other species from the genus of query and used for outgroup selection
-│   ├── iqtree.log						# IQ-TREE logs during phylogenetic tree inference
-│   ├── iqtree_report.log				# IQ-TREE report during phylogenetic tree inference
-│   ├── iqtree_treeshrink.log			# TreeShrink logs
-│   ├── iqtree_pruned_nodes.log			# Nodes pruned from tree by TreeShrink
-│   ├── iqtree_anc.log					# IQ-TREE logs during ancestral reconstrution
-│   ├── iqtree_anc_report.log			# IQ-TREE report during ancestral reconstrution
-│   ├── iqtree_mut_extraction.log		# Logs during mutation extraction process
-│   └── branches.txt					# Tree branch lenghts
-├── figures
-│   ├── ms12syn.pdf						# Barplot with  12-component spectrum on synonymous mutations
-│   └── ms192syn.pdf					# Barplot with 192-component spectrum on synonymous mutations
-├── tables
-│   ├── rates.tsv						# Site rates categories for an alignment
-│   ├── expected_freqs.tsv				# Frequencies of substitutions for each tree node genome
-│   ├── mean_expexted_mutations.tsv		# Averaged frequencies of substitutions for entire tree
-│   ├── ms12syn.tsv						# table with 12-component spectrum on synonymous mutations
-│   ├── ms192syn.tsv					# table with 192-component spectrum on synonymous mutations
-│   └── observed_mutations.tsv			# Recontructed mutations
+./results/
+├── query_id
+│   ├── encoded_headers.txt         # Mapping of encoded headers to original headers
+│   ├── expected_freqs.tsv
+│   ├── expected_mutations.tsv.gz   # Expected mutations used for spectra calculation
+│   ├── filtering_log.txt           # Log from orthologs search and filtering
+│   ├── mean_expexted_mutations.tsv # TODO remove if not needed
+│   ├── ms12all.png
+│   ├── ms12all.tsv
+│   ├── ms12ff.png
+│   ├── ms12ff.tsv
+│   ├── ms12nonsyn.png
+│   ├── ms12nonsyn.tsv
+│   ├── ms12syn_labeled.tsv
+│   ├── ms12syn.png
+│   ├── ms12syn.tsv
+│   ├── ms192all.png
+│   ├── ms192all.tsv
+│   ├── ms192ff.png
+│   ├── ms192ff.tsv
+│   ├── ms192syn.png
+│   ├── ms192syn.tsv
+│   ├── msa_filtered.fasta
+│   ├── mut_extraction.log
+│   ├── observed_mutations.tsv
+│   ├── query.fa
+│   ├── relatives.taxid
+│   ├── sampled_sequences.fasta
+│   ├── seqs_unique.fasta
+│   ├── species.taxid
+│   ├── tree.nwk                    # Final phylogenetic tree
+│   ├── tree.png
+│   └── tree.svg
+├── readme.txt
+└── spectra_total.tsv
 EOM
 """
 }
@@ -838,7 +844,7 @@ Options for Mutation Spectra Derivation:
     }
 
     def seq_counter = 0
-    // TODO add species name to id ???
+    // TODO add species name to id ??? YES
     raw_sequences = Channel.fromPath(params.input)
         .splitFasta(record: [id: true, header: true, seqString: true])
         .filter { record ->
@@ -894,6 +900,8 @@ Options for Mutation Spectra Derivation:
         Threads      : ${params.threads}
         """
         .stripIndent()
+
+        // TODO countFasta > 10? ADD
 
         def seq_counter = 0
         input_fasta = Channel.fromPath(params.input)
@@ -951,18 +959,19 @@ Options for Mutation Spectra Derivation:
     WRITE_README()
 
     // Build or use user-provided tree
-    treefile = ""
     if (params.treefile && params.treefile != "") {
-        if (!file(params.treefile).exists()) {
-            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
-        } else {
+        if (file(params.treefile).exists()) {
             log.info "Using user-provided tree file: ${params.treefile}"
-            treefile = params.treefile
+            tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
+        } else {
+            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
+            tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
         }
+    } else {
+        tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
     }
-    BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink, treefile)
 
-    ASR(BUILD_TREE.out, params.model_asr)
+    ASR(tree_ch, params.model_asr)
 
     // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
     just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
@@ -978,7 +987,7 @@ Options for Mutation Spectra Derivation:
         params.internal, params.terminal, params.branch_spectra
     )
 
-    // // final outputs aggregation TODO move to separate workflow??
-    // spectra = Channel.fromPath( "${params.outdir}/*/ms12syn.tsv" )
-    // AGGREGATE_OUTPUTS(spectra)
+    // final outputs aggregation
+    DERIVE_SPECTRA.out.syn_spectrum
+        .collectFile(name: 'spectra_total.tsv', storeDir: params.outdir, keepHeader: true, skip: 1)
 }
