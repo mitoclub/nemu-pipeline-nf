@@ -5,8 +5,8 @@ channels:
   - defaults
 dependencies:
   - python=3.8
-  - openjdk=11              # Required for MACSE
-  - nextflow
+  - openjdk=17
+  - nextflow=25.10
   - seqkit
   - taxonkit
   - blast                   # BLAST+

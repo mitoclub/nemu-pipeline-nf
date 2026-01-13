@@ -12,45 +12,49 @@
  * Pymutspec (Python lib)
  */
 
-// --- Global Parameters ---
+params {
+    input: Path
+    
+    save_intermeds: Boolean = false
 
-// Inputs/Outputs
-params.input            = ""
-params.outdir           = "results"
+    outdir        = "results"
 
-// Databases & Tools
-params.db               = ""
-params.taxdump          = ""
+    // Databases & Tools
+    db            = ""
+    taxdump: Path = ""
 
-// Pipeline Logic
-params.input_type       = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
-params.species_name     = ""                            // Override species name
-params.gencode          = 1
-params.max_target_seqs  = 2000
-params.min_seqs         = 4                             // Min sequences to proceed
-params.threads          = 1
+    // Pipeline Logic
+    input_type: String = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
+    species_name: String = ""                            // Override species name
+    gencode: Integer = 1
+    max_target_seqs: Integer = 2000
+    min_seqs: Integer = 4                             // Min sequences to proceed
+    threads: Integer = 1
 
-// MSA & Tree
-params.outgroup_id      = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
-params.aligned          = false                         // 'nucleotide' input can be pre-aligned
-params.msa_mode         = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
-params.treefile        = ""                            // Provide pre-computed tree path to skip tree building
-params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
-params.model_asr        = "GTR+FO+G4+I"                 // ASR Model
-params.run_treeshrink   = true                          // Run TreeShrink to prune long branches
+    // MSA & Tree
+    outgroup_id      = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
+    aligned: Boolean = false                         // 'nucleotide' input can be pre-aligned
+    msa_mode: String = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
+    treefile: Path   = ""                            // Provide pre-computed tree path to skip tree building
+    model: String = "GTR+FO+G4+I"                 // IQ-TREE Model
+    model_asr: String = "GTR+FO+G4+I"                 // ASR Model
+    run_treeshrink: Boolean = true                          // Run TreeShrink to prune long branches
 
-// Mutation Extraction
-params.cons_cat_cutoff  = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
-params.proba_arg        = true                          // Use probabilities
-params.uncertainty_coef = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
+    // Mutation Extraction
+    cons_cat_cutoff: Integer = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
+    proba_arg: Boolean = true                          // Use probabilities
+    uncertainty_coef: Boolean = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
 
-// Spectra Calculation
-params.plot             = false                         // Generate plots
+    // Spectra Calculation
+    plot: Boolean = false
 
-// Subsets of mutations to derive spectra for
-params.internal         = false
-params.terminal         = false
-params.branch_spectra   = false
+    // Subsets of mutations to derive spectra for
+    internal: Boolean = false
+    terminal: Boolean = false
+    branch_spectra: Boolean = false
+    
+    help: Boolean = false
+}
 
 
 process PREPARE_TAXONOMY {
@@ -685,12 +689,16 @@ workflow nemuCore {
     take:
     nucl_multi_fasta
     gencode
+    min_seqs
     aligned
+    msa_mode
     model
     model_asr
     treefile
+    run_treeshrink
     proba_arg
     uncertainty_coef
+    cons_cat_cutoff
     plot
     internal
     terminal
@@ -702,45 +710,39 @@ workflow nemuCore {
 
     // Filter Low Count
     seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
-        if (num_seqs.toInteger() > params.min_seqs) return true
-        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
+        if (num_seqs.toInteger() > min_seqs) return true
+        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs}"
         return false
     }
-
-    // in case of protein input, alignment is always needed 
-    // TODO define in the entry workflow
-    def aligned = (params.input_type == "protein") ? false : params.aligned
 
     if (aligned == true) {
         msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
             [id, seq]
         }
     } else {
-        MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
+        MSA(seq_num_verified_ch, gencode, msa_mode)
 
         msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-            if (num_seqs.toInteger() > params.min_seqs) return true
-            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
+            if (num_seqs.toInteger() > min_seqs) return true
+            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs}"
             return false
         }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
     }
 
-    WRITE_README()
-
     // Build or use user-provided tree
-    if (params.treefile && params.treefile != "") {
-        if (file(params.treefile).exists()) {
-            log.info "Using user-provided tree file: ${params.treefile}"
-            tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
+    if (treefile && treefile != "") {
+        if (file(treefile).exists()) {
+            log.info "Using user-provided tree file: ${treefile}"
+            tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, treefile)
         } else {
-            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
-            tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+            log.warn "User-provided tree file '${treefile}' does not exist. Ignoring and building tree de novo."
+            tree_ch = BUILD_TREE(msa_num_verified_ch, model, run_treeshrink)
         }
     } else {
-        tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+        tree_ch = BUILD_TREE(msa_num_verified_ch, model, run_treeshrink)
     }
 
-    ASR(tree_ch, params.model_asr)
+    ASR(tree_ch, model_asr)
 
     // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
     just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
@@ -748,19 +750,17 @@ workflow nemuCore {
     DRAW_TREE(just_tree_ch)
 
     MUT_EXTRACTION(ASR.out, 
-        params.gencode, params.proba_arg, params.uncertainty_coef,
-        params.cons_cat_cutoff,
+        gencode, proba_arg, uncertainty_coef,
+        cons_cat_cutoff,
     )
 
-    main_output = DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
-        params.internal, params.terminal, params.branch_spectra
+    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations,
+        plot, internal, terminal, branch_spectra
     )
 
     emit:
-    DERIVE_SPECTRA.out.syn_spectrum
-
-    publish:
-    spectrum = main_output
+    syn_spectrum = DERIVE_SPECTRA.out.syn_spectrum
+    // TODO emit other files: tre, msa, mutations, etc.
 }
 
 workflow {
@@ -999,64 +999,21 @@ Options for Mutation Spectra Derivation:
         System.exit(1)
     }
 
-    // ENCODE_AND_RMDUP(fasta_verified_ch)
+    // in case of protein input, alignment is always needed 
+    def aligned = (params.input_type == "protein") ? false : params.aligned
 
-    // // Filter Low Count
-    // seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
-    //     if (num_seqs.toInteger() > params.min_seqs) return true
-    //     log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
-    //     return false
-    // }
+    nemuCore(fasta_verified_ch, params.gencode, 
+             params.min_seqs, aligned, params.msa_mode, 
+             params.model, params.model_asr, 
+             params.treefile, params.run_shrinking,
+             params.proba_arg, params.uncertainty_coef, 
+             params.cons_cat_cutoff,
+             params.plot, params.internal, params.terminal,
+             params.branch_spectra)
 
-    // // in case of protein input, alignment is always needed
-    // def aligned = (params.input_type == "protein") ? false : params.aligned
-
-    // if (aligned == true) {
-    //     msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
-    //         [id, seq]
-    //     }
-    // } else {
-    //     MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
-
-    //     msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-    //         if (num_seqs.toInteger() > params.min_seqs) return true
-    //         log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
-    //         return false
-    //     }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
-    // }
-
-    // WRITE_README()
-
-    // // Build or use user-provided tree
-    // if (params.treefile && params.treefile != "") {
-    //     if (file(params.treefile).exists()) {
-    //         log.info "Using user-provided tree file: ${params.treefile}"
-    //         tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
-    //     } else {
-    //         log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
-    //         tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
-    //     }
-    // } else {
-    //     tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
-    // }
-
-    // ASR(tree_ch, params.model_asr)
-
-    // // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
-    // just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
-    //                       .join(seq_num_verified_ch.map { id, _seq, enc_head, _num_seqs -> [id, enc_head] })
-    // DRAW_TREE(just_tree_ch)
-
-    // MUT_EXTRACTION(ASR.out, 
-    //     params.gencode, params.proba_arg, params.uncertainty_coef,
-    //     params.cons_cat_cutoff,
-    // )
-
-    // DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
-    //     params.internal, params.terminal, params.branch_spectra
-    // )
+    WRITE_README()
 
     // final outputs aggregation
-    DERIVE_SPECTRA.out.syn_spectrum
-        .collectFile(name: 'spectra_total.tsv', storeDir: params.outdir, keepHeader: true, skip: 1)
+    nemuCore.out.syn_spectrum.collectFile(
+        name: 'spectra_total.tsv', storeDir: params.outdir, keepHeader: true, skip: 1)
 }
