@@ -1,13 +1,14 @@
 #!/usr/bin/env nextflow
 
 /*
+ * Cite as:
  * NeMu: a comprehensive pipeline for accurate reconstruction of neutral mutation spectra from evolutionary data
  * https://doi.org/10.1093/nar/gkae438
  * Authors: Bogdan Efimenko, Konstantin Popadin, Konstantin Gunbin
  */
 
 /* Requirements:
- * Nextflow, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils, PyMutSpec
+ * Nextflow, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
  * Pymutspec (Python lib)
  */
 
@@ -680,6 +681,88 @@ boolean commandExists(String command) {
     return proc.exitValue() == 0
 }
 
+workflow nemuCore {
+    take:
+    nucl_multi_fasta
+    gencode
+    aligned
+    model
+    model_asr
+    treefile
+    proba_arg
+    uncertainty_coef
+    plot
+    internal
+    terminal
+    branch_spectra
+
+
+    main:
+    ENCODE_AND_RMDUP(nucl_multi_fasta)
+
+    // Filter Low Count
+    seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
+        if (num_seqs.toInteger() > params.min_seqs) return true
+        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
+        return false
+    }
+
+    // in case of protein input, alignment is always needed 
+    // TODO define in the entry workflow
+    def aligned = (params.input_type == "protein") ? false : params.aligned
+
+    if (aligned == true) {
+        msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
+            [id, seq]
+        }
+    } else {
+        MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
+
+        msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
+            if (num_seqs.toInteger() > params.min_seqs) return true
+            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
+            return false
+        }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+    }
+
+    WRITE_README()
+
+    // Build or use user-provided tree
+    if (params.treefile && params.treefile != "") {
+        if (file(params.treefile).exists()) {
+            log.info "Using user-provided tree file: ${params.treefile}"
+            tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
+        } else {
+            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
+            tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+        }
+    } else {
+        tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+    }
+
+    ASR(tree_ch, params.model_asr)
+
+    // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
+    just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
+                          .join(seq_num_verified_ch.map { id, _seq, enc_head, _num_seqs -> [id, enc_head] })
+    DRAW_TREE(just_tree_ch)
+
+    MUT_EXTRACTION(ASR.out, 
+        params.gencode, params.proba_arg, params.uncertainty_coef,
+        params.cons_cat_cutoff,
+    )
+
+    main_output = DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
+        params.internal, params.terminal, params.branch_spectra
+    )
+
+    emit:
+    DERIVE_SPECTRA.out.syn_spectrum
+
+    publish:
+    spectrum = main_output
+}
+
 workflow {
        
     NEMU_VERSION="1.1.0"
@@ -916,62 +999,62 @@ Options for Mutation Spectra Derivation:
         System.exit(1)
     }
 
-    ENCODE_AND_RMDUP(fasta_verified_ch)
+    // ENCODE_AND_RMDUP(fasta_verified_ch)
 
-    // Filter Low Count
-    seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
-        if (num_seqs.toInteger() > params.min_seqs) return true
-        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
-        return false
-    }
+    // // Filter Low Count
+    // seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
+    //     if (num_seqs.toInteger() > params.min_seqs) return true
+    //     log.warn "SKIPPING ${id}: Count ${num_seqs} < ${params.min_seqs}"
+    //     return false
+    // }
 
-    // in case of protein input, alignment is always needed
-    def aligned = (params.input_type == "protein") ? false : params.aligned
+    // // in case of protein input, alignment is always needed
+    // def aligned = (params.input_type == "protein") ? false : params.aligned
 
-    if (aligned == true) {
-        msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
-            [id, seq]
-        }
-    } else {
-        MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
+    // if (aligned == true) {
+    //     msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
+    //         [id, seq]
+    //     }
+    // } else {
+    //     MSA(seq_num_verified_ch, params.gencode, params.msa_mode)
 
-        msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-            if (num_seqs.toInteger() > params.min_seqs) return true
-            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
-            return false
-        }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
-    }
+    //     msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
+    //         if (num_seqs.toInteger() > params.min_seqs) return true
+    //         log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${params.min_seqs}"
+    //         return false
+    //     }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+    // }
 
-    WRITE_README()
+    // WRITE_README()
 
-    // Build or use user-provided tree
-    if (params.treefile && params.treefile != "") {
-        if (file(params.treefile).exists()) {
-            log.info "Using user-provided tree file: ${params.treefile}"
-            tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
-        } else {
-            log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
-            tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
-        }
-    } else {
-        tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
-    }
+    // // Build or use user-provided tree
+    // if (params.treefile && params.treefile != "") {
+    //     if (file(params.treefile).exists()) {
+    //         log.info "Using user-provided tree file: ${params.treefile}"
+    //         tree_ch = INCLUDE_USER_TREE(msa_num_verified_ch, params.treefile)
+    //     } else {
+    //         log.warn "User-provided tree file '${params.treefile}' does not exist. Ignoring and building tree de novo."
+    //         tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+    //     }
+    // } else {
+    //     tree_ch = BUILD_TREE(msa_num_verified_ch, params.model, params.run_treeshrink)
+    // }
 
-    ASR(tree_ch, params.model_asr)
+    // ASR(tree_ch, params.model_asr)
 
-    // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
-    just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
-                          .join(seq_num_verified_ch.map { id, _seq, enc_head, _num_seqs -> [id, enc_head] })
-    DRAW_TREE(just_tree_ch)
+    // // make channel with tree from ASR and nodes mapping from ENCODE_AND_RMDUP for drawing
+    // just_tree_ch = ASR.out.map { id, _seq, tree, _anc_state, _rates -> [id, tree] }
+    //                       .join(seq_num_verified_ch.map { id, _seq, enc_head, _num_seqs -> [id, enc_head] })
+    // DRAW_TREE(just_tree_ch)
 
-    MUT_EXTRACTION(ASR.out, 
-        params.gencode, params.proba_arg, params.uncertainty_coef,
-        params.cons_cat_cutoff,
-    )
+    // MUT_EXTRACTION(ASR.out, 
+    //     params.gencode, params.proba_arg, params.uncertainty_coef,
+    //     params.cons_cat_cutoff,
+    // )
 
-    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
-        params.internal, params.terminal, params.branch_spectra
-    )
+    // DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations, params.plot, 
+    //     params.internal, params.terminal, params.branch_spectra
+    // )
 
     // final outputs aggregation
     DERIVE_SPECTRA.out.syn_spectrum
