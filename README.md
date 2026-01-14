@@ -5,13 +5,11 @@
 
 ## TODO
 
+- run tests
+- improve published outputs
 - fix config
 - add test for nemu-core pipeline
-- upgrade nextflow to latest version
 - prepare container
-- rewrite params
-- delete useless code about input checking (write types in the params declaration)
-- read about help declaration
 
 ## 2 pipeline versions
 
