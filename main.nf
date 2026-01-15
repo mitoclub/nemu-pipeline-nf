@@ -16,7 +16,7 @@
 
 // Inputs/Outputs
 params.input            = ""
-params.outdir           = "results"
+params.outdir           = "results" // TODO delete
 
 // Databases & Tools
 params.db               = ""
@@ -57,7 +57,6 @@ params.branch_spectra   = false
 
 process PREPARE_TAXONOMY {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy' // TODO remove line after debug completion
 
     input:
     tuple val(id), val(species_name), val(sequence)
@@ -253,7 +252,6 @@ with open('extract_coords.txt', 'w') as f:
 
 process ENCODE_AND_RMDUP {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
 
     input:
     tuple val(id), path(sequences), val(OUTGRP_ID)
@@ -486,8 +484,6 @@ process ASR {
 
 process DRAW_TREE {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy', 
-        saveAs: {filename -> "images/$filename"}
 
     input:
     tuple val(id), path(tree), path(nodes_mapping)
@@ -512,7 +508,6 @@ process DRAW_TREE {
 
 process MUT_EXTRACTION {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy'
     cpus params.threads
 
     input:
@@ -524,8 +519,9 @@ process MUT_EXTRACTION {
 
     output:
     tuple val(id), path("observed_mutations.tsv"), path("expected_freqs.tsv"), emit: mutations
-    tuple val(id), path(sequences), path(tree), path("mut_extraction.log")
-    path "expected_mutations.tsv.gz"
+    // tuple val(id), path(sequences), path(tree), path("mut_extraction.log")
+    tuple val(id), path("mut_extraction.log"), emit: logs
+    // path "expected_mutations.tsv.gz"
 
     script:
     """
@@ -557,11 +553,6 @@ process MUT_EXTRACTION {
 
 process DERIVE_SPECTRA {
     tag "$id"
-    publishDir "${params.outdir}/${id}", mode: 'copy',
-        saveAs: {filename ->
-            if (filename =~ /.*.png$/) "images/$filename"
-            else if (filename =~ /.*.tsv$/) "$filename"
-        }
 
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
@@ -572,8 +563,8 @@ process DERIVE_SPECTRA {
 
     output:
     path "ms12syn_labeled.txt", emit: syn_spectrum
-    path "*.tsv"
-    path "*.png", optional: true
+    path "*.tsv", emit: spectra_data
+    path "*.png", optional: true, emit: spectra_plots
 
     script:
     """
@@ -638,9 +629,6 @@ process CHECK_INPUT_TYPE {
 }
 
 process WRITE_README {
-    // TODO move outside process?
-    publishDir "${params.outdir}", mode: 'copy'
-
     output:
     path("readme.txt")
 
@@ -697,7 +685,6 @@ boolean commandExists(String command) {
     return proc.exitValue() == 0
 }
 
-// HelpMessage function
 def printHelpMessage(String version, params) {
     println """
 N E M U   P I P E L I N E  ${version}
@@ -708,19 +695,25 @@ https://doi.org/10.1093/nar/gkae438
 Usage: nextflow run main.nf --input <input_fasta> [options]
 
 Main options:
-    --input_type STRING     Type of input sequences: 
-                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.input_type})
     --input FILE            Input FASTA file (required)
                             If input type is protein, a multi-FASTA with one or several sequences 
                             required (header format: ">ID [Species name]"). If input type 
                             is nucleotide, one or several fasta files with orthologous 
-                            sequences (including outgroup) required 
-    --outdir DIR            Output directory (default: ${params.outdir})
+                            sequences (including outgroup) required
+    --input_type STRING     Type of input sequences: 
+                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.input_type})
     --gencode NUM           Genetic code table (default: ${params.gencode})
                             Used for codon-aware alignment and annotation of mutations
 
+Nextflow options:
+    -with-report FILE       Generate execution report
+    -with-trace FILE        Generate execution trace
+    -with-timeline FILE     Generate execution timeline
+    -output-dir DIR         Specify output directory (default: ./results)
+
 Common options:
-    --threads NUM           Number of threads to use (default: ${params.threads})
+    --threads NUM           Number of threads to use (default: ${params.threads}) TODO delete if not needed
+    --save_intermeds BOOL   Save intermediate files (default: ${params.save_intermeds}) TODO implement
     --help                  Show this help message and exit
 
 Options for protein input:
@@ -836,7 +829,13 @@ workflow nemuCore {
 
     emit:
     syn_spectrum = DERIVE_SPECTRA.out.syn_spectrum
-    // TODO emit other files: tre, msa, mutations, etc.
+    encoded_headers = seq_num_verified_ch // encoded sequences after rmdp
+    msa_tree = ASR.out
+    tree_images = DRAW_TREE.out
+    mutation_logs = MUT_EXTRACTION.out.logs
+    mutation_data = MUT_EXTRACTION.out.mutations
+    spectra_data = DERIVE_SPECTRA.out.spectra_data
+    spectra_plots = DERIVE_SPECTRA.out.spectra_plots
 }
 
 workflow blastHead {
@@ -922,7 +921,7 @@ workflow blastHead {
 }
 
 workflow {
-       
+    main:
     NEMU_VERSION="1.1.0"
 
     // help message
@@ -1045,9 +1044,47 @@ workflow {
              params.plot, params.internal, params.terminal,
              params.branch_spectra)
 
+    // generate readme
     WRITE_README()
 
     // final outputs aggregation
-    nemuCore.out.syn_spectrum.collectFile(
-        name: 'spectra_total.tsv', storeDir: params.outdir, keepHeader: true, skip: 1)
+    spectra_total = nemuCore.out.syn_spectrum.collectFile(
+        name: 'spectra_total.tsv', keepHeader: true, skip: 1)
+
+    publish:
+    spectra_total = spectra_total
+    spectra_data = nemuCore.out.spectra_data
+    spectra_plots = nemuCore.out.spectra_plots
+    mutation_logs = nemuCore.out.mutation_logs
+    mutation_data = nemuCore.out.mutation_data
+    encoded_headers = nemuCore.out.encoded_headers
+    msa_tree = nemuCore.out.msa_tree
+    tree_images = nemuCore.out.tree_images
+    readme = WRITE_README.out
+}
+
+output {
+    spectra_total {}
+    readme {}
+    spectra_plots {
+        path { sample -> "${sample.id}/images/" }
+    }
+    tree_images {
+        path { sample -> "${sample.id}/images/" }
+    }
+    spectra_data {
+        path { sample -> "${sample.id}/" }
+    }
+    mutation_logs {
+        path { sample -> "${sample.id}/" }
+    }
+    mutation_data {
+        path { sample -> "${sample.id}/" }
+    }
+    encoded_headers {
+        path { sample -> "${sample.id}/" }
+    }
+    msa_tree {
+        path { sample -> "${sample.id}/" }
+    }
 }
