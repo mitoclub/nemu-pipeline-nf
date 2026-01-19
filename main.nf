@@ -8,8 +8,8 @@
  */
 
 /* Requirements:
- * Nextflow, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
- * pymutspec (Python lib)
+ * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
+ * pymutspec 0.0.14 (Python lib)
  */
 
 // --- Global Parameters ---
@@ -23,37 +23,39 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
-params.input_type       = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
-params.species_name     = ""                            // Override species name
+params.inputType        = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
+params.speciesName      = ""                            // Override species name
 params.gencode          = 1
-params.max_target_seqs  = 2000
-params.min_seqs         = 4                             // Min sequences to proceed
+params.maxTargetSeqs    = 2000
+params.minSeqs          = 4                             // Min sequences to proceed
 params.threads          = 1
-params.save_intermeds   = false                         // Save intermediate files TODO  
-params.help             = null                          // Show help message
+params.saveIntermeds    = false                         // Save intermediate files TODO  
+params.help             = false                          // Show help message
 
 // MSA & Tree
-params.outgroup_id      = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
+params.outgroupId       = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
 params.aligned          = false                         // 'nucleotide' input can be pre-aligned
-params.msa_mode         = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
+params.msaMode          = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
 params.treefile         = ""                            // Provide pre-computed tree path to skip tree building
 params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
-params.model_asr        = "GTR+FO+G4+I"                 // ASR Model
-params.run_treeshrink   = true                          // Run TreeShrink to prune long branches
+params.modelAsr         = "GTR+FO+G4+I"                 // ASR Model
+params.runTreeShrink    = true                          // Run TreeShrink to prune long branches
 
 // Mutation Extraction
-params.cons_cat_cutoff  = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
-params.proba_arg        = true                          // Use probabilities
-params.uncertainty_coef = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
+params.consCatCutoff    = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
+params.probaArg         = true                          // Use probabilities
+params.uncertaintyCoef  = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
 
 // Spectra Calculation
 params.plot             = false                         // Generate plots
 
 // Subsets of mutations to derive spectra for
-params.internal         = false
+params.internal         = false                         // TODO rename and terminal too
 params.terminal         = false
-params.branch_spectra   = false
+params.branchSpectra    = false
 
+// Type of spectra that will be aggregated to main output table 'spectra_total.tsv'. Can be 'syn', 'syn4f', 'nonsyn', 'all'
+params.spectraType      = "syn"  // TODO implement
 
 process PREPARE_TAXONOMY {
     tag "$id"
@@ -694,6 +696,8 @@ https://doi.org/10.1093/nar/gkae438
 
 Usage: nextflow run main.nf --input <input_fasta> [options]
 
+TODO update to latest
+
 Main options:
     --input FILE            Input FASTA file (required)
                             If input type is protein, a multi-FASTA with one or several sequences 
@@ -701,7 +705,7 @@ Main options:
                             is nucleotide, one or several fasta files with orthologous 
                             sequences (including outgroup) required
     --input_type STRING     Type of input sequences: 
-                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.input_type})
+                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.inputType})
     --gencode NUM           Genetic code table (default: ${params.gencode})
                             Used for codon-aware alignment and annotation of mutations
 
@@ -713,44 +717,44 @@ Nextflow options:
 
 Common options:
     --threads NUM           Number of threads to use (default: ${params.threads}) TODO delete if not needed
-    --save_intermeds BOOL   Save intermediate files (default: ${params.save_intermeds}) TODO implement
+    --save-intermeds BOOL   Save intermediate files (default: ${params.saveIntermeds}) TODO implement
     --help                  Show this help message and exit
 
 Options for protein input:
     --db PATH               BLAST database path (required for protein input)
     --taxdump DIR           Taxdump directory path (required for protein input)
                             TODO integrate to the container
-    --species_name STRING   Override species name. Useful when you work with proteins 
+    --species-name STRING   Override species name. Useful when you work with proteins 
                             from single species
-    --max_target_seqs NUM   Max target sequences for BLAST (default: ${params.max_target_seqs})
+    --max-target-seqs NUM   Max target sequences for BLAST (default: ${params.maxTargetSeqs})
                             tblastn will collect no more than this number of sequences
     
 Options for nucleotide input:
-    --outgroup_id STRING    Outgroup sequence ID (default: ${params.outgroup_id})
+    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId})
                             Specify outgroup sequence ID in the alignment for rooting the tree
     --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
 
 Options for MSA & Phylogeny:
-    --msa_mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msa_mode})
-    --min_seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.min_seqs})
+    --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
+    --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
     --treefile FILE         Input tree file (optional; default: build tree de novo)
     --model STRING          IQ-TREE substitution model (default: ${params.model})
-    --model_asr STRING      ASR substitution model (default: ${params.model_asr})
-    --run_treeshrink BOOL   Run TreeShrink to prune long branches (default: ${params.run_treeshrink})
+    --model-asr STRING      ASR substitution model (default: ${params.modelAsr})
+    --run-treeshrink BOOL   Run TreeShrink to prune long branches (default: ${params.runTreeShrink})
 
 Options for Mutation Extraction:
-    --cons_cat_cutoff NUM   Conservation category cutoff for mutation extraction (default: ${params.cons_cat_cutoff})
+    --cons-cat-cutoff NUM   Conservation category cutoff for mutation extraction (default: ${params.consCatCutoff})
                             0 = no cutoff; only mutations in sites with rate category 
                             less than or equal to this value will be used
-    --proba_arg BOOL        Use probabilities in mutation extraction (default: ${params.proba_arg})
-    --uncertainty_coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
-                            (default: ${params.uncertainty_coef})
+    --proba-arg BOOL        Use probabilities in mutation extraction (default: ${params.probaArg})
+    --uncertainty-coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
+                            (default: ${params.uncertaintyCoef})
 
 Options for Mutation Spectra Derivation:
     --plot BOOL             Generate barcharts of mutation spectra (default: ${params.plot})
     --internal BOOL         Derive spectra for internal branches (default: ${params.internal})
     --terminal BOOL         Derive spectra for terminal branches (default: ${params.terminal})
-    --branch_spectra BOOL   Derive spectra for individual branches (default: ${params.branch_spectra})
+    --branch-spectra BOOL   Derive spectra for individual branches (default: ${params.branchSpectra})
 """.stripIndent()
 }
 
@@ -943,21 +947,21 @@ workflow {
         }
     }
 
-    if (params.input_type == "protein") {
+    if (params.inputType == "protein") {
 
     log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
         ================================
-        input type   : ${params.input_type}
+        input type   : ${params.inputType}
         input file   : ${params.input}
         outdir       : ${params.outdir}
         blast db     : ${params.db}
         taxdump      : ${params.taxdump}
-        max targets  : ${params.max_target_seqs}
+        max targets  : ${params.maxTargetSeqs}
         gencode      : ${params.gencode}
-        MSA mode     : ${params.msa_mode}
+        MSA mode     : ${params.msaMode}
         IQ-TREE model: ${params.model}
-        ASR model    : ${params.model_asr}
+        ASR model    : ${params.modelAsr}
         Threads      : ${params.threads}
         """
         .stripIndent()
@@ -971,30 +975,30 @@ workflow {
             System.exit(1)
         }
     }
-    if (!params.msa_mode || !(params.msa_mode in ["auto", "macse", "mafft_macse", "mafft"])) {
+    if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
         log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
         System.exit(1)
     }
 
     // Blast + Filter + Extract Nucleotide Sequences
     fasta_verified_ch = blastHead(
-        params.input, params.species_name, 
-        params.taxdump, params.db, params.max_target_seqs, 
+        params.input, params.speciesName, 
+        params.taxdump, params.db, params.maxTargetSeqs, 
         params.gencode
     )
-    } else if (params.input_type == "nucleotide_coding" || params.input_type == "nucleotide_noncoding") {
+    } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
     
         log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
         ================================
-        input type   : ${params.input_type}
+        input type   : ${params.inputType}
         input file   : ${params.input}
         outdir       : ${params.outdir}
         gencode      : ${params.gencode}
         aligned      : ${params.aligned}
-        MSA mode     : ${params.msa_mode}
+        MSA mode     : ${params.msaMode}
         IQ-TREE model: ${params.model}
-        ASR model    : ${params.model_asr}
+        ASR model    : ${params.modelAsr}
         Threads      : ${params.threads}
         """
         .stripIndent()
@@ -1002,8 +1006,8 @@ workflow {
         def seq_counter = 0
         input_fasta = channel.fromPath(params.input)
             .filter { fasta -> 
-            if (fasta.countFasta() > params.min_seqs) return true
-            log.warn "Input file ${fasta.getName()} has less than ${params.min_seqs} sequences. SKIPPING."
+            if (fasta.countFasta() > params.minSeqs) return true
+            log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
             return false
         }
         input_fasta_nuc = CHECK_INPUT_TYPE(input_fasta).out.filter { 
@@ -1018,31 +1022,31 @@ workflow {
             def count = ++seq_counter
             def name_indexed = "${count}__${name}"
 
-            // Check if the file contains the outgroup_id
-            def contains_outgroup = file.text.contains(params.outgroup_id)
+            // Check if the file contains the outgroupId
+            def contains_outgroup = file.text.contains(params.outgroupId)
             if (!contains_outgroup) {
-                log.warn "Outgroup ID '${params.outgroup_id}' not found in the file ${name}. Continue anyway."
+                log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. Continue anyway."
             }
-            [name_indexed, file, params.outgroup_id]
+            [name_indexed, file, params.outgroupId]
         }
     }
     else {
-        log.error "Invalid input type specified. Use --input_type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
+        log.error "Invalid input type specified. Use --input-type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
         System.exit(1)
     }
 
     // in case of protein input, alignment is always needed 
-    def aligned = (params.input_type == "protein") ? false : params.aligned
+    def aligned = (params.inputType == "protein") ? false : params.aligned
 
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
     nemuCore(fasta_verified_ch, params.gencode, 
-             params.min_seqs, aligned, params.msa_mode, 
-             params.model, params.model_asr, 
-             params.treefile, params.run_treeshrink,
-             params.proba_arg, params.uncertainty_coef, 
-             params.cons_cat_cutoff,
+             params.minSeqs, aligned, params.msaMode, 
+             params.model, params.modelAsr, 
+             params.treefile, params.runTreeShrink,
+             params.probaArg, params.uncertaintyCoef, 
+             params.consCatCutoff,
              params.plot, params.internal, params.terminal,
-             params.branch_spectra)
+             params.branchSpectra)
 
     // generate readme
     WRITE_README()
