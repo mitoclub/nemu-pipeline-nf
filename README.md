@@ -5,10 +5,10 @@
 
 ## TODO
 
+- add parsing of taxids from fasta headers (using additional option or not)
+- add tests for nemu-core pipeline (without bash script, just nextflow test files)
 - run tests
-- improve published outputs
 - fix config
-- add test for nemu-core pipeline
 - prepare container
 
 ## 2 pipeline versions
@@ -49,7 +49,7 @@ apptainer build nemu-pipeline.sif nemu-pipeline.def
 apptainer exec nemu-pipeline.sif nextflow run /app/main.nf ...
 ```
 
-## Docker
+### Docker
 
 ```bash
 docker build -t nemu-pipeline:latest .

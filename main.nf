@@ -646,6 +646,40 @@ Output structure:
 
 TODO update after all changes
 
+outputDir
+├── parsed_id_name
+│   ├── encoded_headers.txt             # Mapping of encoded headers to original headers
+│   ├── expected_freqs.tsv              # 
+│   ├── images
+│   │   ├── ms12all.png
+│   │   ├── ms12ff.png
+│   │   ├── ms12nonsyn.png
+│   │   ├── ms12syn.png
+│   │   ├── ms192all.png
+│   │   ├── ms192ff.png
+│   │   ├── ms192syn.png
+│   │   ├── tree.png
+│   │   └── tree.svg
+│   ├── iqtree_anc.state
+│   ├── mean_expexted_mutations.tsv
+│   ├── ms12all.tsv
+│   ├── ms12ff.tsv
+│   ├── ms12nonsyn.tsv
+│   ├── ms12syn.tsv
+│   ├── ms192all.tsv
+│   ├── ms192ff.tsv
+│   ├── ms192syn.tsv
+│   ├── msa_filtered.fasta
+│   ├── mut_extraction.log
+│   ├── observed_mutations.tsv
+│   ├── rates.tsv
+│   ├── seqs_unique.fasta
+│   └── tree.nwk
+├── readme.txt
+└── spectra_total.tsv
+
+
+
 ./results/
 ├── query_id
 │   ├── encoded_headers.txt         # Mapping of encoded headers to original headers
