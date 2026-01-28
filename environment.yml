@@ -16,7 +16,8 @@ dependencies:
   - iqtree=2.2.0
   - newick_utils            # nw_reroot, nw_distance, etc.
   - treeshrink
-  - imagemagick
+  - librsvg
+  # - cairosvg
   - gzip
   - numpy<2.0
   - pandas<2.0

@@ -16,7 +16,6 @@
 
 // Inputs/Outputs
 params.input            = ""
-params.outdir           = "results" // TODO delete
 
 // Databases & Tools
 params.db               = ""
@@ -423,8 +422,8 @@ process BUILD_TREE {
     nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
     
     # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
-    head -n 1 branches.txt >> branches.head1.txt
-    if grep -q OUTGRP branches.head1.txt; then
+    tail -n 1 branches.txt >> branches.txt.tail1
+    if grep -q OUTGRP branches.txt.tail1; then
         nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
     else
         nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
@@ -491,8 +490,7 @@ process DRAW_TREE {
     tuple val(id), path(tree), path(nodes_mapping)
 
     output:
-    path("tree.svg")
-    path("tree.png")
+    tuple val(id), path("tree.svg"), path("tree.png")
 
     script:
     """
@@ -504,7 +502,14 @@ process DRAW_TREE {
     nw_rename $tree nodes_mapping_cleaned.txt > tree_renamed.nwk
     nw_display -s -b 'visibility:hidden' -i 'visibility:hidden' tree_renamed.nwk > tree.svg
     
-    magick tree.svg tree.png # TODO replace by python code (must be less than 80MB of ImageMagick)
+    # Convert SVG -> PNG
+    rsvg-convert tree.svg -o tree.png || python3 -c "
+try:
+    from cairosvg import svg2png
+    svg2png(url='tree.svg', write_to='tree.png')
+except Exception as e:
+    print('ERROR: No SVG->PNG converter found (rsvg-convert or cairosvg).')
+    "
     """
 }
 
@@ -565,8 +570,8 @@ process DERIVE_SPECTRA {
 
     output:
     path "ms12syn_labeled.txt", emit: syn_spectrum
-    path "*.tsv", emit: spectra_data
-    path "*.png", optional: true, emit: spectra_plots
+    tuple val(id), path("*.tsv"), emit: spectra_data
+    tuple val(id), path("*.png"), optional: true, emit: spectra_plots
 
     script:
     """
@@ -954,7 +959,6 @@ workflow {
         ================================
         input type   : ${params.inputType}
         input file   : ${params.input}
-        outdir       : ${params.outdir}
         blast db     : ${params.db}
         taxdump      : ${params.taxdump}
         max targets  : ${params.maxTargetSeqs}
@@ -993,7 +997,6 @@ workflow {
         ================================
         input type   : ${params.inputType}
         input file   : ${params.input}
-        outdir       : ${params.outdir}
         gencode      : ${params.gencode}
         aligned      : ${params.aligned}
         MSA mode     : ${params.msaMode}
@@ -1071,24 +1074,24 @@ output {
     spectra_total {}
     readme {}
     spectra_plots {
-        path { sample -> "${sample.id}/images/" }
+        path { sample -> "${sample[0]}/images/" }
     }
     tree_images {
-        path { sample -> "${sample.id}/images/" }
+        path { sample -> "${sample[0]}/images/" }
     }
     spectra_data {
-        path { sample -> "${sample.id}/" }
+        path { sample -> "${sample[0]}/" }
     }
     mutation_logs {
-        path { sample -> "${sample.id}/" }
+        path { sample -> "${sample[0]}/" }
     }
     mutation_data {
-        path { sample -> "${sample.id}/" }
+        path { sample -> "${sample[0]}/" }
     }
     encoded_headers {
-        path { sample -> "${sample.id}/" }
+        path { sample -> "${sample[0]}/" }
     }
     msa_tree {
-        path { sample -> "${sample.id}/" }
+        path { sample -> "${sample[0]}/" }
     }
 }

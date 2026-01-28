@@ -2,9 +2,10 @@
 work
 test_output*
 .nextflow*
-results
-results_legacy
+.nf-test*
+*results*
 .vscode
+trace-*
 # pixi environments
 .pixi/*
 !.pixi/config.toml
