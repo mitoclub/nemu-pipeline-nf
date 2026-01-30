@@ -22,7 +22,7 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
-params.inputType        = "protein"                     // protein, nucleotide_coding, nucleotide_noncoding
+params.inputType        = "nucleotide_coding"                     // protein, nucleotide_coding, nucleotide_noncoding
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
 params.maxTargetSeqs    = 2000
@@ -679,43 +679,6 @@ outputDir
 ├── readme.txt
 └── spectra_total.tsv
 
-
-
-./results/
-├── query_id
-│   ├── encoded_headers.txt         # Mapping of encoded headers to original headers
-│   ├── expected_freqs.tsv
-│   ├── expected_mutations.tsv.gz   # Expected mutations used for spectra calculation
-│   ├── blast_filtering_log.txt           # Log from orthologs search and filtering
-│   ├── mean_expexted_mutations.tsv # TODO remove if not needed
-│   ├── ms12all.png
-│   ├── ms12all.tsv
-│   ├── ms12ff.png
-│   ├── ms12ff.tsv
-│   ├── ms12nonsyn.png
-│   ├── ms12nonsyn.tsv
-│   ├── ms12syn_labeled.tsv
-│   ├── ms12syn.png
-│   ├── ms12syn.tsv
-│   ├── ms192all.png
-│   ├── ms192all.tsv
-│   ├── ms192ff.png
-│   ├── ms192ff.tsv
-│   ├── ms192syn.png
-│   ├── ms192syn.tsv
-│   ├── msa_filtered.fasta
-│   ├── mut_extraction.log
-│   ├── observed_mutations.tsv
-│   ├── query.fa
-│   ├── relatives.taxid
-│   ├── sampled_sequences.fasta
-│   ├── seqs_unique.fasta
-│   ├── species.taxid
-│   ├── tree.nwk                    # Final phylogenetic tree
-│   ├── tree.png
-│   └── tree.svg
-├── readme.txt
-└── spectra_total.tsv
 EOM
 """
 }
@@ -745,8 +708,8 @@ Main options:
                             is nucleotide, one or several fasta files with orthologous 
                             sequences (including outgroup) required
     --input_type STRING     Type of input sequences: 
-                            protein, nucleotide_coding, nucleotide_noncoding (default: ${params.inputType})
-    --gencode NUM           Genetic code table (default: ${params.gencode})
+                            protein, nucleotide_coding, nucleotide_noncoding (default: nucleotide_coding)
+    --gencode NUM           Genetic code table (default: 1)
                             Used for codon-aware alignment and annotation of mutations
 
 Nextflow options:
@@ -756,9 +719,14 @@ Nextflow options:
     -output-dir DIR         Specify output directory (default: ./results)
 
 Common options:
-    --threads NUM           Number of threads to use (default: ${params.threads}) TODO delete if not needed
-    --save-intermeds BOOL   Save intermediate files (default: ${params.saveIntermeds}) TODO implement
+    --threads NUM           Number of threads to use (default: 1) TODO delete if not needed
+    --save-intermeds BOOL   Save intermediate files TODO implement
     --help                  Show this help message and exit
+
+Options for nucleotide input:
+    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId})
+                            Specify outgroup sequence ID in the alignment for rooting the tree
+    --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
 
 Options for protein input:
     --db PATH               BLAST database path (required for protein input)
@@ -769,11 +737,6 @@ Options for protein input:
     --max-target-seqs NUM   Max target sequences for BLAST (default: ${params.maxTargetSeqs})
                             tblastn will collect no more than this number of sequences
     
-Options for nucleotide input:
-    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId})
-                            Specify outgroup sequence ID in the alignment for rooting the tree
-    --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
-
 Options for MSA & Phylogeny:
     --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
     --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
