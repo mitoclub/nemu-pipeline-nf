@@ -419,11 +419,12 @@ process BUILD_TREE {
     fi
 
     # Check outgroup "quality"
-    nw_distance -m p -s f -n treeshrink.nwk | sort -grk 2 > branches.txt
+    nw_distance -m p -s f -n treeshrink.nwk > branches.txt
+    LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
     
     # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
-    tail -n 1 branches.txt >> branches.txt.tail1
-    if grep -q OUTGRP branches.txt.tail1; then
+    head -n 1 branches.txt.sorted > branches.txt.head1
+    if grep -q OUTGRP branches.txt.head1; then
         nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
     else
         nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
