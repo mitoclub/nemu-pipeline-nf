@@ -5,7 +5,7 @@
 
 ## TODO
 
-- add parsing of taxids from fasta headers (using additional option or not)
+- add parsing of taxids from fasta headers (using additional option or not) (NEED TO TEST NOW)
 - add tests for nemu-core pipeline (without bash script, just nextflow test files)
 - run tests
 - fix config

@@ -76,28 +76,41 @@ process PREPARE_TAXONOMY {
     export TAXONKIT_DB=${taxdump_dir}
     CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
 
-    echo "Deriving TaxIDs for: \$CLEAN_NAME"
-    
-    # 1. Get TaxID
-    echo "\$CLEAN_NAME" | taxonkit name2taxid | taxonkit lineage -i 2 -r -L > taxid_lineage.txt
-    SPEC_ID_RAW=\$(cut -f2 taxid_lineage.txt)
-    SPEC_RANK=\$(cut -f3 taxid_lineage.txt)
-
-    if [ -z "\$SPEC_ID_RAW" ]; then
-        echo "WARNING: TaxID not found for \$CLEAN_NAME"
-        touch species.taxid relatives.taxid query.fa
-        exit 0
-    fi
-    
-    if [ \$SPEC_RANK = "species" ]; then
-        SPEC_ID=\$SPEC_ID_RAW
+    if [[ \$CLEAN_NAME =~ ^[0-9]+$ ]]; then
+        echo "Assuming provided species name is TaxID: \$CLEAN_NAME"
+        SPEC_ID=\$CLEAN_NAME
+        echo "Check existance of TaxID \$SPEC_ID"
+        echo \$SPEC_ID | taxonkit lineage -c > given_taxid_lineage.txt
+        status_code=\$(cut -f2 given_taxid_lineage.txt)
+        if [ \$status_code != \$SPEC_ID ]; then
+            echo "WARNING: Provided TaxID \$SPEC_ID not found in taxonomy database"
+            touch species.taxid relatives.taxid query.fa
+            exit 0
+        fi
     else
-        # Get species from lineage
-        SPEC_ID=\$(echo \$SPEC_ID_RAW | taxonkit lineage | taxonkit reformat -t -f "{s}" | cut -f4)
+        echo "Deriving TaxIDs using taxonkit for: \$CLEAN_NAME"
         
-        # if spec_id is empty, fallback to original
-        if [ -z "\$SPEC_ID" ]; then
+        # 1. Get TaxID
+        echo "\$CLEAN_NAME" | taxonkit name2taxid | taxonkit lineage -i 2 -r -L > taxid_lineage.txt
+        SPEC_ID_RAW=\$(cut -f2 taxid_lineage.txt)
+        SPEC_RANK=\$(cut -f3 taxid_lineage.txt)
+
+        if [ -z "\$SPEC_ID_RAW" ]; then
+            echo "WARNING: TaxID not found for \$CLEAN_NAME"
+            touch species.taxid relatives.taxid query.fa
+            exit 0
+        fi
+        
+        if [ \$SPEC_RANK = "species" ]; then
             SPEC_ID=\$SPEC_ID_RAW
+        else
+            # Get species from lineage
+            SPEC_ID=\$(echo \$SPEC_ID_RAW | taxonkit lineage | taxonkit reformat -t -f "{s}" | cut -f4)
+            
+            # if spec_id is empty, fallback to original
+            if [ -z "\$SPEC_ID" ]; then
+                SPEC_ID=\$SPEC_ID_RAW
+            fi
         fi
     fi
     
