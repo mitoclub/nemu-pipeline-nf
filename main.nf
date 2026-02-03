@@ -965,42 +965,44 @@ workflow {
 
     if (params.inputType == "protein") {
 
-    log.info """\
-        N E M U   P I P E L I N E  ${NEMU_VERSION}
-        ================================
-        input type   : ${params.inputType}
-        input file   : ${params.input}
-        blast db     : ${params.db}
-        taxdump      : ${params.taxdump}
-        max targets  : ${params.maxTargetSeqs}
-        gencode      : ${params.gencode}
-        MSA mode     : ${params.msaMode}
-        IQ-TREE model: ${params.model}
-        ASR model    : ${params.modelAsr}
-        Threads      : ${params.threads}
-        """
-        .stripIndent()
+        log.info """\
+            N E M U   P I P E L I N E  ${NEMU_VERSION}
+            ================================
+            input type   : ${params.inputType}
+            input file   : ${params.input}
+            blast db     : ${params.db}
+            taxdump      : ${params.taxdump}
+            max targets  : ${params.maxTargetSeqs}
+            gencode      : ${params.gencode}
+            MSA mode     : ${params.msaMode}
+            IQ-TREE model: ${params.model}
+            ASR model    : ${params.modelAsr}
+            Threads      : ${params.threads}
+            """
+            .stripIndent()
 
-    def combined = ["Input file": params.input,
-                    "BLAST database": params.db + ".ndb",
-                    "Taxdump directory": params.taxdump]
-    combined.each { label, path ->
-        if (!path || path == "" || !file(path).exists()) {
-            log.error "${label} path '${path}' is empty or does not exist."
+        def combined = ["Input file": params.input,
+                        "BLAST database": params.db + ".ndb",
+                        "Taxdump directory": params.taxdump]
+        combined.each { label, path ->
+            if (!path || path == "" || !file(path).exists()) {
+                log.error "${label} path '${path}' is empty or does not exist."
+                System.exit(1)
+            }
+        }
+        if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
+            log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
             System.exit(1)
         }
-    }
-    if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
-        log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
-        System.exit(1)
-    }
 
-    // Blast + Filter + Extract Nucleotide Sequences
-    fasta_verified_ch = blastHead(
-        params.input, params.speciesName, 
-        params.taxdump, params.db, params.maxTargetSeqs, 
-        params.gencode
-    )
+        // Blast + Filter + Extract Nucleotide Sequences
+        fasta_verified_ch = blastHead(
+            params.input, params.speciesName, 
+            params.taxdump, params.db, params.maxTargetSeqs, 
+            params.gencode
+        )
+        treefile = ""
+
     } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
     
         log.info """\
@@ -1016,6 +1018,8 @@ workflow {
         Threads      : ${params.threads}
         """
         .stripIndent()
+
+        treefile = params.treefile
 
         def seq_counter = 0
         input_fasta = channel.fromPath(params.input)
@@ -1056,7 +1060,7 @@ workflow {
     nemuCore(fasta_verified_ch, params.gencode, 
              params.minSeqs, aligned, params.msaMode, 
              params.model, params.modelAsr, 
-             params.treefile, params.runTreeShrink,
+             treefile, params.runTreeShrink,
              params.probaArg, params.uncertaintyCoef, 
              params.consCatCutoff,
              params.plot, params.internal, params.terminal,
