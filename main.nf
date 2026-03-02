@@ -76,7 +76,7 @@ process PREPARE_TAXONOMY {
     export TAXONKIT_DB=${taxdump_dir}
     CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
 
-    if [[ \$CLEAN_NAME =~ ^[0-9]+$ ]]; then
+    if [[ \$CLEAN_NAME =~ ^[0-9]+\$ ]]; then
         echo "Assuming provided species name is TaxID: \$CLEAN_NAME"
         SPEC_ID=\$CLEAN_NAME
         echo "Check existance of TaxID \$SPEC_ID"
