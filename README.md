@@ -2,6 +2,16 @@
 
 # USe this https://github.com/cbcrg/unistrap/tree/master to 
 
+## Quick start
+
+```bash
+git clone TODO
+cd nemu-pipeline
+
+./main.nf --input "sample_input_ecoli_head/*.fasta" --input-type nucleotide_coding -o results_ecoli --gencode 1 --outgroup-id outgroup
+
+```
+
 
 ## TODO
 
