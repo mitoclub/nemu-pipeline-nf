@@ -1028,7 +1028,8 @@ workflow {
             log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
             return false
         }
-        input_fasta_nuc = CHECK_INPUT_TYPE(input_fasta).out.filter { 
+        CHECK_INPUT_TYPE(input_fasta)
+        input_fasta_nuc = CHECK_INPUT_TYPE.out.filter { 
             fasta, type ->
             if (type == "DNA") return true
             log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING."

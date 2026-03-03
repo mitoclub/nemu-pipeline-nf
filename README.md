@@ -25,6 +25,8 @@
 
 ## Test
 
+TODO
+
 Run the script (from this directory) to test the pipeline on your computer. Don't forget to change path to singularity container and runOptions in the config file.
 
 **Important about runOptions:** if you run the pipeline from disk that don't contain your $HOME directory, you must write in the runOptions `--bind $MOUNT_PATH`, where $MOUNT_PATH is the mount point of the disk from that you want to execute the pipeline (`--bind /scratch` in my case). If you run the pipeline from any subdirectory of your $HOME, delete this runOptions from config file.
