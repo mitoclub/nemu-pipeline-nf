@@ -22,6 +22,7 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
+        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
 params.inputType        = "nucleotide_coding"                     // protein, nucleotide_coding, nucleotide_noncoding
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
@@ -55,6 +56,7 @@ params.branchSpectra    = false
 
 // Type of spectra that will be aggregated to main output table 'spectra_total.tsv'. Can be 'syn', 'syn4f', 'nonsyn', 'all'
 params.spectraType      = "syn"  // TODO implement
+params.calc192          = true   // TODO implement
 
 process PREPARE_TAXONOMY {
     tag "$id"
@@ -531,6 +533,8 @@ process MUT_EXTRACTION {
     tag "$id"
     cpus params.threads
 
+    errorStrategy 'ignore'
+
     input:
     tuple val(id), path(sequences), path(tree), path(internal_states), path(rates)
     val gencode
@@ -574,6 +578,7 @@ process MUT_EXTRACTION {
 
 process DERIVE_SPECTRA {
     tag "$id"
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
@@ -602,6 +607,8 @@ process DERIVE_SPECTRA {
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
     # TODO replace by pure python code
+
+    # TODO fix error "After filtration observed 0 mutations" 36__K10914
     
     # Main Calculation
     calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS
@@ -1004,7 +1011,7 @@ workflow {
         treefile = ""
 
     } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
-    
+        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
         log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
         ================================
