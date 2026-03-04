@@ -437,9 +437,9 @@ process BUILD_TREE {
     nw_distance -m p -s f -n treeshrink.nwk > branches.txt
     LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
     
-    # Prune bad outgroup if needed (simple heuristic: if OUTGRP is not the furthest leaf)
-    head -n 1 branches.txt.sorted > branches.txt.head1
-    if grep -q OUTGRP branches.txt.head1; then
+    # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
+    head -n 5 branches.txt.sorted > branches.txt.top5
+    if grep -q OUTGRP branches.txt.top5; then
         nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
     else
         nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
@@ -533,7 +533,7 @@ process MUT_EXTRACTION {
     tag "$id"
     cpus params.threads
 
-    errorStrategy 'ignore'
+    // errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences), path(tree), path(internal_states), path(rates)
@@ -578,7 +578,7 @@ process MUT_EXTRACTION {
 
 process DERIVE_SPECTRA {
     tag "$id"
-    errorStrategy 'ignore'
+    // errorStrategy 'ignore'
 
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
@@ -1028,7 +1028,6 @@ workflow {
 
         treefile = params.treefile
 
-        def seq_counter = 0
         input_fasta = channel.fromPath(params.input)
             .filter { fasta -> 
             if (fasta.countFasta() > params.minSeqs) return true
@@ -1045,15 +1044,13 @@ workflow {
 
         fasta_verified_ch = input_fasta_nuc.map { file ->
             def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
-            def count = ++seq_counter
-            def name_indexed = "${count}__${name}"
 
             // Check if the file contains the outgroupId
             def contains_outgroup = file.text.contains(params.outgroupId)
             if (!contains_outgroup) {
                 log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. Continue anyway."
             }
-            [name_indexed, file, params.outgroupId]
+            [name, file, params.outgroupId]
         }
     }
     else {

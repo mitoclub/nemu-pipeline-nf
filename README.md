@@ -8,7 +8,7 @@
 git clone TODO
 cd nemu-pipeline
 
-./main.nf --input "sample_input_ecoli_head/*.fasta" --input-type nucleotide_coding -o results_ecoli --gencode 1 --outgroup-id outgroup
+./main.nf -process.cpus=20 -resume -with-trace --input "sample_input_ecoli_head/*.fasta" --input-type nucleotide_coding -o results_ecoli --gencode 1 --outgroup-id outgroup
 
 ```
 
