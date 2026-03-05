@@ -9,4 +9,5 @@ trace-*
 # pixi environments
 .pixi/*
 !.pixi/config.toml
-
+test.nf
+nuc_db*

@@ -438,6 +438,7 @@ process BUILD_TREE {
     LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
     
     # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
+    # TODO get 10% of branches
     head -n 5 branches.txt.sorted > branches.txt.top5
     if grep -q OUTGRP branches.txt.top5; then
         nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
@@ -612,6 +613,12 @@ process DERIVE_SPECTRA {
     
     # Main Calculation
     calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS
+    
+    if [ ! -f ms12syn.tsv ]; then
+        # TODO improve filtration quality in the script
+        touch ms12syn_labeled.txt
+        exit 0
+    fi
 
     # Internal
     if [ "$internal" = "true" ]; then
@@ -653,6 +660,9 @@ process CHECK_INPUT_TYPE {
     script:
     """
     TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
+
+    # TODO uppercase with seqkit
+    # seqkit seq 
     """
 }
 
