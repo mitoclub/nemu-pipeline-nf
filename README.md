@@ -1,69 +1,92 @@
-# The pipeline for neutral mutation spectra evaluation based on evolutionary data
+# NeMu-pipeline
 
-# USe this https://github.com/cbcrg/unistrap/tree/master to 
+A Nextflow-based bioinformatics pipeline for sequence analysis and phylogenetic inference.
 
-## Quick start
+<!-- example repo - https://github.com/cbcrg/unistrap/tree/master -->
+
+## Workflow schematic representation
+
+Image TODO
+
+
+## Dependencies
+
+All dependencies are specified in [environment.yml](./environment.yml) and include:
+
+- **Nextflow** (with **Java**)
+- **Python**
+- **IQtree**
+- **SeqKit**
+- **TaxonKit**
+- **BLAST+**
+- **MAFFT** and **MACSE**
+
+## Installation
+
+### Conda
+
+Install all dependencies using conda or mamba. Conda and mamba can be installed following [these instructions](https://github.com/conda-forge/miniforge)
 
 ```bash
-git clone TODO
+conda create -f environment.yml -n nemu-pipeline --yes
+conda activate nemu-pipeline
+```
+
+### Docker
+
+Build the container to run the pipeline inside it. You can either run the entire pipeline with Nextflow inside the container or use the container as an isolated environment for the Nextflow pipeline (requires manually installing Nextflow 25.10 with Java OpenJDK 17).
+
+```bash
+docker build -t nemu-pipeline:latest .
+#docker run -it nemu-pipeline:latest nextflow run /app/main.nf ...
+```
+
+## Usage
+
+Clone the repository and run the pipeline with your input sequences:
+
+```bash
+git clone <repository-url>
 cd nemu-pipeline
 
-./main.nf -process.cpus=20 -resume -with-trace --input "sample_input_ecoli_head/*.fasta" --input-type nucleotide_coding -o results_ecoli --gencode 1 --outgroup-id outgroup
-
+nextflow run main.nf \
+  -process.cpus=20 \
+  -resume \
+  -with-trace \
+  --input "sample_input_ecoli_head/*.fasta" \
+  --input-type nucleotide_coding \
+  -o results_ecoli \
+  --gencode 1 \
+  --outgroup-id outgroup
 ```
+
+**Parameters:**
+- `--input`: Path pattern to input FASTA files
+- `--input-type`: Type of input sequence (e.g., nucleotide_coding)
+- `-o`: Output directory for results
+- `--gencode`: Genetic code table to use
+- `--outgroup-id`: Identifier for the outgroup sequence
+
+
+## Command line options
+
+TODO
 
 
 ## TODO
 
-- add parsing of taxids from fasta headers (using additional option or not) (NEED TO TEST NOW)
-- add tests for nemu-core pipeline (without bash script, just nextflow test files)
-- run tests
-- fix config
-- prepare container
+- [ ] Add parsing of taxon IDs from FASTA headers (configurable option)
+- [ ] Add comprehensive tests for pipeline (Nextflow-based test files)
+- [ ] Run and validate tests
+- [ ] Finalize pipeline configuration
+- [ ] Prepare and optimize container image
 
-## 2 pipeline versions
 
-1. [NeMu pipeline including tblastn-head](./nemu.nf) - input is single protein sequence that will be used by tblastn to search homologous nucleotide sequences in selected database. After this step NeMu-core executes with phylogeny and spectra inference
-2. [NeMu-core pipeline](./nemu-core.nf) - input is multifasta of nucleotide sequences, that used for phylogeny and spectra inference
+## Testing
 
-## Config examples
-
-1. [Config for comparative species analysis](./comp_sp.config) - on many species
-2. [Config for intraspecies analysis](./single_sp.config) - on single species
-
-    - Don't forget to change process.container and singularity.runOptions parameters according to execution environment
-
-## Test
-
-TODO
-
-Run the script (from this directory) to test the pipeline on your computer. Don't forget to change path to singularity container and runOptions in the config file.
-
-**Important about runOptions:** if you run the pipeline from disk that don't contain your $HOME directory, you must write in the runOptions `--bind $MOUNT_PATH`, where $MOUNT_PATH is the mount point of the disk from that you want to execute the pipeline (`--bind /scratch` in my case). If you run the pipeline from any subdirectory of your $HOME, delete this runOptions from config file.
+Run the test script from the repository directory to validate the pipeline:
 
 ```bash
 bash test.sh
 ```
 
-
-## Build and activate environment
-
-### Mamba
-
-```bash
-mamba create -f environment.yml -n nemu-pipeline --yes
-mamba activate nemu-pipeline
-```
-
-### Apptainer/Singularity
-```bash
-apptainer build nemu-pipeline.sif nemu-pipeline.def
-apptainer exec nemu-pipeline.sif nextflow run /app/main.nf ...
-```
-
-### Docker
-
-```bash
-docker build -t nemu-pipeline:latest .
-docker run -it nemu-pipeline:latest nextflow run /app/main.nf ...
-```
