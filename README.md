@@ -48,30 +48,108 @@ Clone the repository and run the pipeline with your input sequences:
 ```bash
 git clone <repository-url>
 cd nemu-pipeline
+```
 
+### When input is nucleotide multi-fasta file
+
+Sequences must be orthologous and may be aligned (--aligned parameter).
+
+It's possible to pass several input fasta files using "*". Note that it's required to use caveats.
+
+Recomendations for comparative-species analysis: --branch-spectra, --model, OUTGRP, consCatCutoff etc. TODO
+
+```bash
 nextflow run main.nf \
-  -process.cpus=20 \
-  -resume \
-  -with-trace \
-  --input "sample_input_ecoli_head/*.fasta" \
-  --input-type nucleotide_coding \
   -o results_ecoli \
+  -process.cpus=20 \
+  --input-type nucleotide_coding \
+  --input "sample_input_ecoli/*.fasta" \
   --gencode 1 \
   --outgroup-id outgroup
 ```
 
-**Parameters:**
-- `--input`: Path pattern to input FASTA files
-- `--input-type`: Type of input sequence (e.g., nucleotide_coding)
-- `-o`: Output directory for results
-- `--gencode`: Genetic code table to use
-- `--outgroup-id`: Identifier for the outgroup sequence
+### When input is protein sequences
 
+```bash
+nextflow run main.nf \
+  -o results_test \
+  -process.cpus=20 \
+  -resume \
+  -with-trace \
+  --input-type protein \
+  --input "test_data/test_proteins.fasta" \
+  --gencode 2 \
+  --db path_to_nuc_database \
+  --taxdump "$HOME/.taxonkit"
+```
 
 ## Command line options
 
-TODO
+It's possible to use command line parameters or change nextflow.config file.
 
+```txt
+Usage: nextflow run main.nf --input <input_fasta> [options]
+
+TODO update to latest
+
+Main options:
+    --input FILE            Input FASTA file (required)
+                            If input type is protein, a multi-FASTA with one or several sequences 
+                            required (header format: ">ID [Species name]"). If input type 
+                            is nucleotide, one or several fasta files with orthologous 
+                            sequences (including outgroup) required
+    --input_type STRING     Type of input sequences: 
+                            protein, nucleotide_coding, nucleotide_noncoding (default: nucleotide_coding)
+    --gencode NUM           Genetic code table (default: 1)
+                            Used for codon-aware alignment and annotation of mutations
+
+Required options for nucleotide input:
+    --outgroup-id STRING    Outgroup sequence ID (default: OUTGRP)
+                            Specify outgroup sequence ID in the alignment for rooting the tree
+    --aligned BOOL          Input sequences are pre-aligned (default: false)
+
+Required options for protein input:
+    --db PATH               BLAST database path (required for protein input)
+    --taxdump DIR           Taxdump directory path (required for protein input)
+                            TODO integrate to the container
+    --species-name STRING   Override species name. Useful when you work with proteins 
+                            from single species
+    --max-target-seqs NUM   Max target sequences for BLAST (default: 2000)
+                            tblastn will collect no more than this number of sequences
+
+Nextflow options:
+    -with-report FILE       Generate execution report
+    -with-trace FILE        Generate execution trace
+    -with-timeline FILE     Generate execution timeline
+    -output-dir DIR         Specify output directory (default: ./results)
+
+Common options:
+    --threads NUM           Number of threads to use (default: 1) TODO delete if not needed
+    --save-intermeds BOOL   Save intermediate files TODO implement
+    --help                  Show this help message and exit
+
+Options for MSA & Phylogeny:
+    --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: auto)
+    --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: 4)
+    --treefile FILE         Input tree file (optional; default: build tree de novo)
+    --model STRING          IQ-TREE substitution model (default: GTR+FO+G4+I)
+    --model-asr STRING      ASR substitution model (default: GTR+FO+G4+I)
+    --run-treeshrink BOOL   Run TreeShrink to prune long branches (default: true)
+
+Options for Mutation Extraction:
+    --cons-cat-cutoff NUM   Conservation category cutoff for mutation extraction (default: 0)
+                            0 = no cutoff; only mutations in sites with rate category 
+                            less than or equal to this value will be used
+    --proba-arg BOOL        Use probabilities in mutation extraction (default: true)
+    --uncertainty-coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
+                            (default: true)
+
+Options for Mutation Spectra Derivation:
+    --plot BOOL             Generate barcharts of mutation spectra (default: true)
+    --internal BOOL         Derive spectra for internal branches (default: false)
+    --terminal BOOL         Derive spectra for terminal branches (default: false)
+    --branch-spectra BOOL   Derive spectra for individual branches (default: false)
+```
 
 ## TODO
 
