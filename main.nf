@@ -60,6 +60,14 @@ params.calc192          = true   // TODO implement
 
 process PREPARE_TAXONOMY {
     tag "$id"
+    // TODO optimize the step: process all species names in single run; 
+    // firstly write 2 files: with species names and taxids
+    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) 
+    // and later merge before lineages parsing
+    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids
+    // try to derive lineages also simultaneously
+    // taxonkit list --json and parse it...
+    // prepare table with id,species,species_taxids,relatives_taxids and pass its rows to the next process
 
     input:
     tuple val(id), val(species_name), val(sequence)
@@ -119,7 +127,7 @@ process PREPARE_TAXONOMY {
     # 2. Get downstream TaxIDs
     taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
 
-    # 3. Find Family ID
+    # 3. Find Family ID  TODO do this single time like in L117 (collect species,genus,family)
     FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
 
     if [ -z "\$FAMILY_ID" ]; then
@@ -140,7 +148,8 @@ process PREPARE_TAXONOMY {
 process TBLASTN {
     tag "$id"
     cpus params.threads
-
+    errorStrategy 'ignore'
+    
     input:
     tuple val(id), path(query), path(species_taxids), path(relatives_taxids)
     val db_path
@@ -188,6 +197,7 @@ process TBLASTN {
 process FILTER_AND_EXPORT {
     tag "$id"
     cpus params.threads
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(records_species), path(records_relatives)
@@ -268,6 +278,7 @@ with open('extract_coords.txt', 'w') as f:
 
 process ENCODE_AND_RMDUP {
     tag "$id"
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences), val(OUTGRP_ID)
@@ -299,6 +310,7 @@ process ENCODE_AND_RMDUP {
 process MSA {
     tag "$id"
     cpus params.threads
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences), path(encoded_headers), val(num_seqs)
@@ -407,10 +419,8 @@ process MSA {
 process BUILD_TREE {
     tag "$id"
     cpus params.threads
-
-    errorStrategy 'retry'
-    maxRetries 3
-
+    errorStrategy 'ignore'
+    
     input:
     tuple val(id), path(sequences)
     val model
@@ -455,6 +465,7 @@ process BUILD_TREE {
 
 process INCLUDE_USER_TREE {
     tag "$id"
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences)
@@ -474,9 +485,7 @@ process INCLUDE_USER_TREE {
 process ASR {
     tag "$id"
     cpus params.threads
-
-    errorStrategy 'retry'
-    maxRetries 3
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences), path(tree)
@@ -533,8 +542,7 @@ except Exception as e:
 process MUT_EXTRACTION {
     tag "$id"
     cpus params.threads
-
-    // errorStrategy 'ignore'
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(sequences), path(tree), path(internal_states), path(rates)
@@ -579,7 +587,7 @@ process MUT_EXTRACTION {
 
 process DERIVE_SPECTRA {
     tag "$id"
-    // errorStrategy 'ignore'
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), path(obs_muts), path(exp_freqs)
@@ -1101,7 +1109,7 @@ workflow {
 }
 
 output {
-    spectra_total {}
+    spectra_total {}  // TODO move instead of copy
     readme {}
     spectra_plots {
         path { sample -> "${sample[0]}/images/" }

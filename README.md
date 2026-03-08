@@ -28,7 +28,10 @@ All dependencies are specified in [environment.yml](./environment.yml) and inclu
 Install all dependencies using conda or mamba. Conda and mamba can be installed following [these instructions](https://github.com/conda-forge/miniforge)
 
 ```bash
-conda create -f environment.yml -n nemu-pipeline --yes
+conda env create -f environment.yml -n nemu --yes
+# OR
+mamba create -f environment.yml -n nemu --yes
+
 conda activate nemu-pipeline
 ```
 
