@@ -6,8 +6,7 @@ A Nextflow-based bioinformatics pipeline for sequence analysis and phylogenetic 
 
 ## Workflow schematic representation
 
-Image TODO
-
+![scheme](./docs/scheme.jpg)
 
 ## Dependencies
 
@@ -25,12 +24,17 @@ All dependencies are specified in [environment.yml](./environment.yml) and inclu
 
 ### Conda
 
-Install all dependencies using conda or mamba. Conda and mamba can be installed following [these instructions](https://github.com/conda-forge/miniforge)
+Clone the repository. Install the dependencies using conda or mamba. 
+
+Conda and mamba can be installed following [these instructions](https://github.com/conda-forge/miniforge).
 
 ```bash
+git clone https://github.com/mitoclub/nemu-pipeline-nf.git
+cd nemu-pipeline
+
 conda env create -f environment.yml -n nemu --yes
 # OR
-mamba create -f environment.yml -n nemu --yes
+# mamba create -f environment.yml -n nemu --yes
 
 conda activate nemu-pipeline
 ```
@@ -46,20 +50,11 @@ docker build -t nemu-pipeline:latest .
 
 ## Usage
 
-Clone the repository and run the pipeline with your input sequences:
-
-```bash
-git clone <repository-url>
-cd nemu-pipeline
-```
-
 ### When input is nucleotide multi-fasta file
 
 Sequences must be orthologous and may be aligned (--aligned parameter).
 
-It's possible to pass several input fasta files using "*". Note that it's required to use caveats.
-
-Recomendations for comparative-species analysis: --branch-spectra, --model, OUTGRP, consCatCutoff etc. TODO
+It's possible to pass several input fasta files using "*". Note that it's required to use caveats for the filename.
 
 ```bash
 nextflow run main.nf \
@@ -85,6 +80,8 @@ nextflow run main.nf \
   --db path_to_nuc_database \
   --taxdump "$HOME/.taxonkit"
 ```
+
+Recomendations for comparative-species analysis: --branch-spectra, --model, OUTGRP, consCatCutoff etc. TODO
 
 ## Command line options
 
@@ -162,7 +159,7 @@ Options for Mutation Spectra Derivation:
 - [ ] Finalize pipeline configuration
 - [ ] Prepare and optimize container image
 
-
+<!-- 
 ## Testing
 
 Run the test script from the repository directory to validate the pipeline:
@@ -170,4 +167,4 @@ Run the test script from the repository directory to validate the pipeline:
 ```bash
 bash test.sh
 ```
-
+ -->
