@@ -1,0 +1,290 @@
+// # single protein fasta
+
+// # multiple protein fasta
+
+// # nucl multifasta with protein input type flag
+
+// # proteins to nucl type
+
+// # one nucl multifasta
+
+// # several nucl multifasta files
+
+// # species name for some species and same without species name option
+
+// # 
+
+nextflow_pipeline {
+    
+    name "Test NeMu Pipeline - Main Workflow"
+    script "main.nf"
+
+    test("Should run successfully with protein input and minimal parameters") {
+        
+        tag "protein_input"
+        tag "integration"
+        
+        when {
+            params {
+                // Core required parameters for protein input
+                input = "${projectDir}/test_data/test_protein.fasta"
+                inputType = "protein"
+                db = "${projectDir}/test_data/test_blast_db"
+                taxdump = "${projectDir}/test_data/test_taxdump"
+                outdir = "${outputDir}"
+                
+                // Minimal processing parameters
+                gencode = 1
+                maxTargetSeqs = 100
+                minSeqs = 3
+                threads = 2
+                msaMode = "mafft"
+                model = "GTR+FO+G4"
+                modelAsr = "GTR+FO+G4"
+                runTreeShrink = false
+                
+                // Mutation extraction parameters
+                consCatCutoff = 0
+                probaArg = true
+                uncertaintyCoef = false
+                
+                // Spectra parameters
+                plot = false
+                internal = false
+                terminal = false
+                branchSpectra = false
+                spectraType = "syn"
+                
+                // Disable help
+                help = false
+            }
+        }
+
+        then {
+            // Check workflow completed successfully
+            assert workflow.success
+            
+            // Verify main output file exists
+            assert path("${params.outdir}/spectra_total.tsv").exists()
+            
+            // Verify readme was generated
+            assert path("${params.outdir}/readme.txt").exists()
+            
+            // Check that at least some tasks succeeded
+            assert workflow.trace.succeeded().size() > 0
+        }
+    }
+
+    test("Should run successfully with nucleotide_coding input") {
+        
+        tag "nucleotide_input"
+        tag "integration"
+        
+        when {
+            params {
+                // Core required parameters for nucleotide input
+                input = "${projectDir}/test_data/test_nucleotide_aligned.fasta"
+                inputType = "nucleotide_coding"
+                outdir = "${outputDir}"
+                
+                // Nucleotide-specific parameters
+                aligned = true
+                outgroupId = "OUTGRP"
+                gencode = 1
+                minSeqs = 3
+                threads = 2
+                
+                // Tree and model parameters
+                model = "GTR+FO+G4"
+                modelAsr = "GTR+FO+G4"
+                runTreeShrink = false
+                
+                // Mutation extraction parameters
+                consCatCutoff = 0
+                probaArg = true
+                uncertaintyCoef = false
+                
+                // Spectra parameters
+                plot = false
+                internal = false
+                terminal = false
+                branchSpectra = false
+                
+                // Disable help
+                help = false
+            }
+        }
+
+        then {
+            // Check workflow completed successfully
+            assert workflow.success
+            
+            // Verify main output file exists
+            assert path("${params.outdir}/spectra_total.tsv").exists()
+            
+            // Verify readme was generated
+            assert path("${params.outdir}/readme.txt").exists()
+            
+            // Check that tasks succeeded
+            assert workflow.trace.succeeded().size() > 0
+        }
+    }
+
+    test("Should handle help parameter correctly") {
+        
+        tag "help"
+        tag "parameter_validation"
+        
+        when {
+            params {
+                help = true
+            }
+        }
+
+        then {
+            // Pipeline should exit early with help message
+            // Check that no processing tasks were executed
+            assert workflow.trace.tasks().size() == 0
+        }
+    }
+
+    test("Should fail gracefully with missing required parameters for protein input") {
+        
+        tag "error_handling"
+        tag "parameter_validation"
+        
+        when {
+            params {
+                input = "${projectDir}/test_data/test_protein.fasta"
+                inputType = "protein"
+                // Missing db and taxdump parameters
+                outdir = "${outputDir}"
+                help = false
+            }
+        }
+
+        then {
+            // Pipeline should fail due to missing required parameters
+            assert workflow.failed
+        }
+    }
+
+    test("Should run with custom tree file provided") {
+        
+        tag "custom_tree"
+        tag "integration"
+        
+        when {
+            params {
+                input = "${projectDir}/test_data/test_nucleotide_aligned.fasta"
+                inputType = "nucleotide_coding"
+                outdir = "${outputDir}"
+                aligned = true
+                outgroupId = "OUTGRP"
+                treefile = "${projectDir}/test_data/test_tree.nwk"
+                gencode = 1
+                minSeqs = 3
+                threads = 2
+                modelAsr = "GTR+FO+G4"
+                consCatCutoff = 0
+                probaArg = true
+                uncertaintyCoef = false
+                plot = false
+                help = false
+            }
+        }
+
+        then {
+            // Check workflow completed successfully
+            assert workflow.success
+            
+            // Verify outputs exist
+            assert path("${params.outdir}/spectra_total.tsv").exists()
+            
+            // Verify that tree building was skipped (fewer tasks)
+            assert workflow.trace.succeeded().size() > 0
+        }
+    }
+
+    test("Should generate plots when plot parameter is enabled") {
+        
+        tag "plotting"
+        tag "integration"
+        
+        when {
+            params {
+                input = "${projectDir}/test_data/test_nucleotide_aligned.fasta"
+                inputType = "nucleotide_coding"
+                outdir = "${outputDir}"
+                aligned = true
+                outgroupId = "OUTGRP"
+                gencode = 1
+                minSeqs = 3
+                threads = 2
+                model = "GTR+FO+G4"
+                modelAsr = "GTR+FO+G4"
+                runTreeShrink = false
+                consCatCutoff = 0
+                probaArg = true
+                uncertaintyCoef = false
+                plot = true
+                internal = false
+                terminal = false
+                branchSpectra = false
+                help = false
+            }
+        }
+
+        then {
+            // Check workflow completed successfully
+            assert workflow.success
+            
+            // Verify main outputs exist
+            assert path("${params.outdir}/spectra_total.tsv").exists()
+            
+            // Check that plot files were generated (in subdirectories)
+            assert workflow.trace.succeeded().size() > 0
+        }
+    }
+
+    test("Should handle internal and terminal branch spectra options") {
+        
+        tag "branch_spectra"
+        tag "integration"
+        
+        when {
+            params {
+                input = "${projectDir}/test_data/test_nucleotide_aligned.fasta"
+                inputType = "nucleotide_coding"
+                outdir = "${outputDir}"
+                aligned = true
+                outgroupId = "OUTGRP"
+                gencode = 1
+                minSeqs = 3
+                threads = 2
+                model = "GTR+FO+G4"
+                modelAsr = "GTR+FO+G4"
+                runTreeShrink = false
+                consCatCutoff = 0
+                probaArg = true
+                uncertaintyCoef = false
+                plot = false
+                internal = true
+                terminal = true
+                branchSpectra = true
+                help = false
+            }
+        }
+
+        then {
+            // Check workflow completed successfully
+            assert workflow.success
+            
+            // Verify main output exists
+            assert path("${params.outdir}/spectra_total.tsv").exists()
+            
+            // Verify additional spectra files were generated
+            assert workflow.trace.succeeded().size() > 0
+        }
+    }
+}

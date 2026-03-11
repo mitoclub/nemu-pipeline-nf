@@ -2,3 +2,12 @@
 work
 test_output*
 .nextflow*
+.nf-test*
+*results*
+.vscode
+trace-*
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+test.nf
+nuc_db*
