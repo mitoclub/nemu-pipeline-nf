@@ -1,6 +1,6 @@
 # NeMu-pipeline
 
-A Nextflow-based bioinformatics pipeline for sequence analysis and phylogenetic inference.
+A Nextflow-based bioinformatics pipeline for mutational spectra reconstruction based on sequences using phylogenetic methods.
 
 <!-- example repo - https://github.com/cbcrg/unistrap/tree/master -->
 
@@ -8,17 +8,27 @@ A Nextflow-based bioinformatics pipeline for sequence analysis and phylogenetic 
 
 ![scheme](./docs/scheme.jpg)
 
+## Features
+
+- Authomatic sequences retrieval using tblastn and nucleotide database (when the input is protein sequence)
+- Outlier sequences removal 
+- Mutation polarization using outrgoup based phylogenetic tree rooting
+- Accounting of mutations probabilities according to ancestral states probabilities
+- Sampling of mutations along the tree for variance estimation
+- Spectra derivation for all synonymous and synonymous fourfold (syn4f) sites separately
+- Spectra derivation according to site rate category (optional)
+
 ## Dependencies
 
 All dependencies are specified in [environment.yml](./environment.yml) and include:
 
 - **Nextflow** (with **Java**)
-- **Python**
-- **IQtree**
-- **SeqKit**
-- **TaxonKit**
 - **BLAST+**
 - **MAFFT** and **MACSE**
+- **SeqKit** and **TaxonKit**
+- **IQtree**
+- **TreeShrink**
+- **Python** (**PyMutSpec** package)
 
 ## Installation
 

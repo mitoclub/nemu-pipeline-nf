@@ -11,3 +11,4 @@ trace-*
 !.pixi/config.toml
 test.nf
 nuc_db*
+params*.json

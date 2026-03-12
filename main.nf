@@ -31,6 +31,7 @@ params.minSeqs          = 4                             // Min sequences to proc
 params.threads          = 1
 params.saveIntermeds    = false                         // Save intermediate files TODO  
 params.help             = false                          // Show help message
+params.verbose          = false
 
 // MSA & Tree
 params.outgroupId       = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
@@ -933,8 +934,10 @@ workflow blastHead {
         }
 
     // show parsed sequences
-    raw_sequences.view { id, species, seq ->
-        "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
+    if (params.verbose) {
+        raw_sequences.view { id, species, seq ->
+            "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
+        }
     }
 
     PREPARE_TAXONOMY(raw_sequences, taxdump)
@@ -1046,7 +1049,7 @@ workflow {
 
         treefile = params.treefile
 
-        input_fasta = channel.fromPath(params.input)
+        input_fasta = channel.fromPath(params.input) // TODO check existance of input files (currently there is no check)
             .filter { fasta -> 
             if (fasta.countFasta() > params.minSeqs) return true
             log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
