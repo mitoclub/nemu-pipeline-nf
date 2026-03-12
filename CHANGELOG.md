@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Query sequence splitting for batch processing
 - Simultaneous processing pipeline for handling multiple inputs in parallel
-- MSA (Multiple Sequence Alignment) pipeline with configurable modes: `auto_cdn`, `accurate_cdn`, `fast_cdn`, or `pure_mafft`
-- Configurable minimum sequence threshold (`min_seqs` parameter) before proceeding to MSA
+- MSA (Multiple Sequence Alignment) pipeline with configurable modes: `auto`, `macse`, `mafft_macse`, or `mafft`
+- Configurable minimum sequence threshold (`minSeqs` parameter) before proceeding to MSA
 - Tree visualization process using nw_display
 - Possibility to run without outgroup
 
@@ -30,11 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Species taxid parsing issues (taxonkit integration)
 - Outgroup-related bugs
 - BLAST species and outgroup sequence encoding
+- Channel output wiring issue in nucleotide input path (`CHECK_INPUT_TYPE`) that caused runtime aborts
+- Outgroup remapping logic in `ENCODE_AND_RMDUP` to avoid incorrect fallback to the last sequence
+- Sequence-threshold checks to use `>= minSeqs` consistently
 
-## [1.0.0] - DATE TODO
+## [1.0.0] - 2026-01-28
 
 ### Initial Release
 
 - Single input file processing
 - Singularity container is the main environment
-- Functionality described in the paper TODO
+- Core functionality described in the NeMu paper

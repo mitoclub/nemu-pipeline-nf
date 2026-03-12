@@ -12,3 +12,4 @@ trace-*
 test.nf
 nuc_db*
 params*.json
+prepare_data.py
