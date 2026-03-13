@@ -266,7 +266,7 @@ with open('extract_coords.txt', 'w') as f:
     " >> blast_filtering_log.txt
     # END OF PYTHON CODE
 
-    export OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
+    OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
 
     # 4. Extract
     if [ -s extract_coords.txt ]; then
@@ -304,7 +304,7 @@ process ENCODE_AND_RMDUP {
     
     # Remove duplicates
     seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
-    export NUM_SEQS=\$(grep -c '>' ./seqs_unique.fasta)
+    NUM_SEQS=\$(grep -c '>' ./seqs_unique.fasta)
     """
 }
 
@@ -412,7 +412,7 @@ process MSA {
     # N-Content Warning
     seqkit fx2tab --name --gc --avg-qual "msa.fasta" | \
         awk '\$4 > 20 {print \$1 " has high N content"}' >> alignment.log
-    export NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta)
+    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta)
     """
 }
 
@@ -436,20 +436,16 @@ process BUILD_TREE {
     echo "Building tree de novo..."
     iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
 
-    # Detect presence of an OUTGRP sequence in the alignment (if any)
+    # Set OUTGRP_PARAM to "-x OUTGRP" if outgroup is present, else empty string
     if grep -q '^>OUTGRP' "$sequences"; then
-        HAS_OUTGRP=true
+        OUTGRP_PARAM="-x OUTGRP"
     else
-        HAS_OUTGRP=false
+        OUTGRP_PARAM=""
     fi
 
     nseq=\$(grep -c '>' $sequences)
     if [ $run_treeshrink = true ] && [ \$nseq -gt 10 ]; then
-        if [ "\$HAS_OUTGRP" = true ]; then
-            run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
-        else
-            run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE
-        fi
+        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM
         mv treeshrink.treefile treeshrink.nwk
     else
         mv ml.treefile treeshrink.nwk
@@ -538,8 +534,6 @@ process DRAW_TREE {
 
     script:
     """
-    ## cut -f2 $nodes_mapping  | cut -d ' ' -f 2-3 | sed 's/[^a-zA-Z0-9\\_]/_/g' | cut -c 1-20 > cleaned_headers.txt
-    
     cut -f2 "$nodes_mapping" | sed 's/[^A-Za-z0-9_]/_/g' | cut -c 1-20 > cleaned_headers.txt
     paste <(cut -f1 "$nodes_mapping") cleaned_headers.txt > nodes_mapping_cleaned.txt
     
@@ -685,7 +679,7 @@ process CHECK_INPUT_TYPE {
 
     script:
     """
-    export TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
+    TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
 
     # TODO uppercase with seqkit
     # seqkit seq 
@@ -1036,7 +1030,7 @@ workflow {
             }
         }
         if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
-            log.error "Invalid MSA mode specified. Set --msaMode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
+            log.error "Invalid MSA mode specified. Set --msa-mode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
             System.exit(1)
         }
 
