@@ -60,10 +60,8 @@ docker build -t nemu-pipeline:latest .
 ```bash
 nextflow run main.nf \
   -output-dir results_ecoli \
-  -process.cpus 20 \
   --inputType nucleotide_coding \
   --input "test_data/nemu_input/*.fasta" \
-  --gencode 1 \
   --outgroupId OUTGRP
 ```
 
@@ -72,9 +70,6 @@ nextflow run main.nf \
 ```bash
 nextflow run main.nf \
   -output-dir results_test \
-  -process.cpus 20 \
-  -resume \
-  -with-trace \
   --inputType protein \
   --input "test_data/test_proteins.fasta" \
   --gencode 2 \
@@ -116,6 +111,7 @@ Recommendation for comparative-species analysis: use `--branchSpectra`, `--model
 Useful Nextflow CLI options:
 
 - `-o, -output-dir DIR`
+- `-resume`
 - `-with-report`
 - `-with-trace`
 - `-with-timeline`

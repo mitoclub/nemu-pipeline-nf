@@ -289,10 +289,14 @@ process ENCODE_AND_RMDUP {
 
     script:
     """
+    # TODO error for nucl input: OUTGRP_ID not specified, it in description
+    # TODO add process for parsing the OUTGRP id from the nucleotide input
     seqkit replace -p .+ -r "seq_{nr}" -w 0 < $sequences > encoded_raw.fasta
     if [ -z "${OUTGRP_ID}" ]; then
         mv encoded_raw.fasta encoded.fasta
     else
+        # this logic works only for protein input
+        # TODO find line with outgrp sign and replace its basid id (seq_i) with OUTGRP
         outgrp_id=\$(seqkit seq -i -n < ./encoded_raw.fasta | tail -1)
         seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
     fi
