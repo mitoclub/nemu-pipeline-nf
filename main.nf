@@ -1086,7 +1086,7 @@ workflow {
         }
     }
     else {
-        log.error "Invalid input type specified. Set --inputType to 'protein', 'nucleotide_coding', or 'nucleotide_noncoding'."
+        log.error "Invalid input type specified. Set --input-type to 'protein', 'nucleotide_coding', or 'nucleotide_noncoding'."
         System.exit(1)
     }
 
@@ -1095,6 +1095,9 @@ workflow {
 
     // For noncoding nucleotide input, restrict to mafft (non-codon-aware) alignment
     def effective_msa_mode = (params.inputType == "nucleotide_noncoding") ? "mafft" : params.msaMode
+    if (effective_msa_mode != params.msaMode) {
+        log.warn "Input type is 'nucleotide_noncoding'; overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
+    }
 
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
     nemuCore(fasta_verified_ch, params.gencode, 
