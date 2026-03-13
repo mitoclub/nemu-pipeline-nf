@@ -98,7 +98,7 @@ Recommendation for comparative-species analysis: use `--branchSpectra`, `--model
 - `--speciesName` Override species name for protein input.
 - `--maxTargetSeqs` Maximum BLAST targets (default `2000`).
 - `--threads` Threads per input (default `1`).
-- `--msaMode` `auto`, `macse`, `mafft_macse`, or `mafft`.
+- `--msa-mode` `auto`, `macse`, `mafft_macse`, or `mafft`.
 - `--minSeqs` Minimum sequence count to continue (default `4`).
 - `--treefile` User-provided tree file path.
 - `--model` IQ-TREE model for tree inference.

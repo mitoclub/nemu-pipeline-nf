@@ -8,7 +8,7 @@
  */
 
 /* Requirements:
- * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
+ * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.8, mafft, macse, goalign, iqtree2, newick_utils
  * pymutspec 0.0.14 (Python lib)
  */
 
@@ -436,25 +436,38 @@ process BUILD_TREE {
     echo "Building tree de novo..."
     iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
 
+    # Set OUTGRP_PARAM to "-x OUTGRP" if outgroup is present, else empty string
+    if grep -q '^>OUTGRP' "$sequences"; then
+        OUTGRP_PARAM="-x OUTGRP"
+    else
+        OUTGRP_PARAM=""
+    fi
+
     nseq=\$(grep -c '>' $sequences)
     if [ $run_treeshrink = true ] && [ \$nseq -gt 10 ]; then
-        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
+        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM
         mv treeshrink.treefile treeshrink.nwk
     else
         mv ml.treefile treeshrink.nwk
     fi
 
-    # Check outgroup "quality"
-    nw_distance -m p -s f -n treeshrink.nwk > branches.txt
-    LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
-    
-    # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
-    # TODO get 10% of branches
-    head -n 5 branches.txt.sorted > branches.txt.top5
-    if grep -q OUTGRP branches.txt.top5; then
-        nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
+    # Determine if OUTGRP is present in the resulting tree
+    if nw_labels treeshrink.nwk | grep -qx 'OUTGRP'; then
+        # Check outgroup "quality"
+        nw_distance -m p -s f -n treeshrink.nwk > branches.txt
+        LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
+        
+        # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
+        # TODO get 10% of branches
+        head -n 5 branches.txt.sorted > branches.txt.top5
+        if grep -q OUTGRP branches.txt.top5; then
+            nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
+        else
+            nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
+        fi
     else
-        nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
+        # No explicit outgroup present: root on the longest branch
+        nw_reroot -l treeshrink.nwk > tree_rerooted.nwk
     fi
 
     # drop sequences not present in the tree
@@ -521,10 +534,8 @@ process DRAW_TREE {
 
     script:
     """
-    ## cut -f2 $nodes_mapping  | cut -d ' ' -f 2-3 | sed 's/[^a-zA-Z0-9\\_]/_/g' | cut -c 1-20 > cleaned_headers.txt
-    
-    cut -f1 -d: $nodes_mapping | sed 's/\t/_/' | cut -c 1-20 > cleaned_headers.txt
-    paste <(cut -f1 $nodes_mapping ) <(cat cleaned_headers.txt) > nodes_mapping_cleaned.txt
+    cut -f2 "$nodes_mapping" | sed 's/[^A-Za-z0-9_]/_/g' | cut -c 1-20 > cleaned_headers.txt
+    paste <(cut -f1 "$nodes_mapping") cleaned_headers.txt > nodes_mapping_cleaned.txt
     
     nw_rename $tree nodes_mapping_cleaned.txt > tree_renamed.nwk
     nw_display -s -b 'visibility:hidden' -i 'visibility:hidden' tree_renamed.nwk > tree.svg
@@ -1019,7 +1030,7 @@ workflow {
             }
         }
         if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
-            log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
+            log.error "Invalid MSA mode specified. Set --msa-mode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
             System.exit(1)
         }
 
@@ -1075,16 +1086,22 @@ workflow {
         }
     }
     else {
-        log.error "Invalid input type specified. Use --input-type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
+        log.error "Invalid input type specified. Set --input-type to 'protein', 'nucleotide_coding', or 'nucleotide_noncoding'."
         System.exit(1)
     }
 
     // in case of protein input, alignment is always needed 
     def aligned = (params.inputType == "protein") ? false : params.aligned
 
+    // For noncoding nucleotide input, restrict to mafft (non-codon-aware) alignment
+    def effective_msa_mode = (params.inputType == "nucleotide_noncoding") ? "mafft" : params.msaMode
+    if (effective_msa_mode != params.msaMode) {
+        log.warn "Input type is 'nucleotide_noncoding'; overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
+    }
+
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
     nemuCore(fasta_verified_ch, params.gencode, 
-             params.minSeqs, aligned, params.msaMode, 
+             params.minSeqs, aligned, effective_msa_mode, 
              params.model, params.modelAsr, 
              treefile, params.runTreeShrink,
              params.probaArg, params.uncertaintyCoef, 
