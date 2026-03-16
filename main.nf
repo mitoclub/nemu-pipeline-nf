@@ -62,11 +62,11 @@ params.calc192          = true   // TODO implement
 process PREPARE_TAXONOMY {
     tag "$id"
     // TODO optimize the step: process all species names in single run; 
-    // firstly write 2 files: with species names and taxids
-    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) 
-    // and later merge before lineages parsing
-    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids
-    // try to derive lineages also simultaneously
+    // firstly write 2 files: with species names and taxids DONE
+    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) DONE
+    // and later merge before lineages parsing DONE
+    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids (NO, keep all taxids for lineage parsing, user must provide species name or taxid) DONE
+    // try to derive lineages also simultaneously DONE
     // taxonkit list --json and parse it...
     // prepare table with id,species,species_taxids,relatives_taxids and pass its rows to the next process
 
@@ -141,8 +141,48 @@ process PREPARE_TAXONOMY {
     fi
 
     # Save query
-    echo ">${id} ${species_name}" > query.fa
+    echo ">${id}" > query.fa
     echo "${sequence}" >> query.fa
+    """
+}
+
+process PREPARE_TAXONOMY_NEW {
+    // errorStrategy 'ignore'
+
+    input:
+    path species_list
+    path taxdump_dir
+
+    output:
+    path "taxonomy_prepared.txt"
+
+    script:
+    """
+    export TAXONKIT_DB=${taxdump_dir}
+
+    # Split taxids and species names into separate files
+    grep -E "^[0-9]+\$" ${species_list} > taxids.txt
+    grep -Ev "^[0-9]+\$" ${species_list} > species_names.txt
+
+    # Derive taxids for species names
+    taxonkit name2taxid --show-rank species_names.txt > species_info.txt
+
+    # Concat taxids (taxids.txt and 2nd column of species_info.txt) from both sources and get lineages
+    cut -f2 species_info.txt > taxids_from_names.txt
+    cat taxids.txt taxids_from_names.txt | sort -n | uniq | \
+        taxonkit lineage | taxonkit reformat -t -f "{f},{s}" > taxonomy_lineages.txt
+
+    # prepare comma separated lists of taxids for species and relatives
+    tx_list_to_parse=\$(cut -f4 taxonomy_lineages.txt | sed 's/,/\n/' | sort -n | uniq | paste -sd ",")
+    
+    # Get taxonomic information for all taxids in a single run
+    taxonkit list --ids "\$tx_list_to_parse" --json > taxonlist.json
+
+    # Reformat json to table TODO
+
+    # Merge taxonomy_lineages.txt and tax_lists TODO
+
+    touch taxonomy_prepared.txt
     """
 }
 
@@ -954,6 +994,22 @@ workflow blastHead {
             "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
         }
     }
+
+    // species_lst = raw_sequences.map { _id, species, _seq -> [species] }
+    //     .unique().flatten().collectFile(name: 'sample.txt', newLine: true, sort: true)
+    
+    // if (params.verbose) {
+    // species_lst.subscribe { file ->
+    //         println "Parsed species names are saved to file: $file"
+    //         println "File content is:\n${file.text}"
+    //     }
+    // }
+            
+    // PREPARE_TAXONOMY_NEW(species_lst, taxdump) |
+    //     subscribe { file ->
+    //         println "Taxonomy preparation output saved to: $file"
+    //         println "File content is: ${file.text}"
+    //     }
 
     PREPARE_TAXONOMY(raw_sequences, taxdump)
 
