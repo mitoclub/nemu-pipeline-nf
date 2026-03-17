@@ -57,6 +57,8 @@ docker build -t nemu-pipeline:latest .
 
 ### Nucleotide multi-FASTA input
 
+Input fasta should have outgroup record with ID `OUTGRP` (or specified by `--outgroupId`). See [K10000.fasta](./test_data/ecoli_nucl_seqs/K10000.fasta) for example.
+
 ```bash
 nextflow run main.nf \
   -output-dir results_ecoli \
@@ -67,6 +69,11 @@ nextflow run main.nf \
 
 ### Protein FASTA input
 
+Input fasta should have species names or taxon IDs in headers. For example:
+`>Some_ID [9606]` or `>Some_ID [Homo sapiens]`
+
+See [test_proteins.fasta](./test_data/test_proteins_mtdna.fasta) for example.
+
 ```bash
 nextflow run main.nf \
   -output-dir results_test \
@@ -76,8 +83,6 @@ nextflow run main.nf \
   --db path_to_nucleotide_blast_db_prefix \
   --taxdump "$HOME/.taxonkit"
 ```
-
-Recommendation for comparative-species analysis: use `--branchSpectra`, `--model`, `--outgroupId`, and `--consCatCutoff` as needed.
 
 ## Command Line Options
 
@@ -115,6 +120,10 @@ Useful Nextflow CLI options:
 - `-with-report`
 - `-with-trace`
 - `-with-timeline`
+
+## Advanced Usage
+
+Recommendation for comparative-species analysis: use `--branchSpectra`, `--model`, `--outgroupId`, and `--consCatCutoff` as needed.
 
 ## TODO
 

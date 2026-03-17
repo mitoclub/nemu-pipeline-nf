@@ -19,6 +19,7 @@ dependencies:
   - librsvg
   # - cairosvg
   - gzip
+  - jq
   - numpy<2.0
   - pandas<2.0
   - seaborn==0.12.2

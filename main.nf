@@ -176,7 +176,7 @@ process PREPARE_TAXONOMY_NEW {
     tx_list_to_parse=\$(cut -f4 taxonomy_lineages.txt | sed 's/,/\n/' | sort -n | uniq | paste -sd ",")
     
     # Get taxonomic information for all taxids in a single run
-    taxonkit list --ids "\$tx_list_to_parse" --json > taxonlist.json
+        taxonkit list --ids "\$tx_list_to_parse" --json > taxonlist.json
 
     # Reformat json to table TODO
 
@@ -1052,7 +1052,7 @@ workflow {
     // Dependency Checks
     def reqs = ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", "macse",
                 "goalign", "python3", "java", "run_treeshrink.py", 
-                "nw_reroot", "nw_distance", "nw_prune", "iqtree2", 
+                "nw_reroot", "nw_distance", "nw_prune", "iqtree2", "jq",
                 "collect_mutations.py", "calculate_mutspec.py"]
     
     reqs.each { dep ->
