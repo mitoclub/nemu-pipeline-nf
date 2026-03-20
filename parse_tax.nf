@@ -6,21 +6,13 @@ params.speciesName      = ""                            // Override species name
 
 process PREPARE_TAXONOMY {
     tag "$id"
-    // TODO optimize the step: process all species names in single run; 
-    // firstly write 2 files: with species names and taxids DONE
-    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) DONE
-    // and later merge before lineages parsing DONE
-    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids (NO, keep all taxids for lineage parsing, user must provide species name or taxid) DONE
-    // try to derive lineages also simultaneously DONE
-    // taxonkit list --json and parse it...
-    // prepare table with id,species,species_taxids,relatives_taxids and pass its rows to the next process
 
     input:
     tuple val(id), val(species_name), val(sequence)
     path taxdump_dir
 
     output:
-    tuple val(id), path("query.fa"), path("species.taxid"), path("relatives.taxid")
+    tuple val(id), path("query.fa"), path("species.taxid"), path("relatives.taxid"), val(species_name)
 
     script:
     """
@@ -92,14 +84,12 @@ process PREPARE_TAXONOMY {
 }
 
 process PREPARE_TAXONOMY_NEW {
-    // errorStrategy 'ignore'
-
     input:
     path species_list
     path taxdump_dir
 
     output:
-    path "taxonomy_prepared.txt"
+    path "taxonomy_final.txt"
 
     script:
     """
@@ -127,7 +117,7 @@ process PREPARE_TAXONOMY_NEW {
     if [ ! -s all_taxids.txt ]; then
         : > taxonomy_lineages.txt
         echo '{}' > taxonlist.json
-        : > taxonomy_prepared.txt
+        : > taxonomy_final.txt
         exit 0
     fi
 
@@ -158,19 +148,52 @@ process PREPARE_TAXONOMY_NEW {
         echo \$sp_taxid > sp_lineage_\${sp_taxid}.txt
         cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage_\${sp_taxid}.txt
         cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage_\${fam_taxid}.txt
+        
+        grep -vf sp_lineage_\${sp_taxid}.txt fam_lineage_\${fam_taxid}.txt > fam_lineage_excl_sp_\${fam_taxid}.txt
 
         sp_lineage_lst=\$(paste -sd ',' sp_lineage_\${sp_taxid}.txt)
-        fam_lineage_lst=\$(paste -sd ',' fam_lineage_\${fam_taxid}.txt)
+        fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp_\${fam_taxid}.txt)
 
         paste <(echo "\$sp_lineage_lst") <(echo "\$fam_lineage_lst") >> descendants.txt
 
-
     done < fam_sp_taxids.csv
+    
+    # TODO name in the input can differ from name in the taxonomy due to db versions
+    # need to explicitly add name from the input to the firsh column
+    paste <(cat taxonomy_lineages.txt) <(cat descendants.txt) >> taxonomy_final.txt
+    """
+}
 
-        
+process COMPARE_LINEAGES {
+    tag "$id"
+    errorStrategy 'ignore'
 
+    input:
+    tuple val(id), path(query), path(species_taxids), path(relatives_taxids), val(species_name)
+    path taxonomy_final
 
-    cp descendants.txt taxonomy_prepared.txt
+    output:
+    tuple val(id), path("lineage_comparison.txt")
+
+    script:
+    """
+    # extract species and family taxids for the given species name from taxonomy_final
+    awk -F'\t' -v name="$species_name" '
+        \$1 == name || \$2 ~ name {print}
+    ' $taxonomy_final > matched_species.txt
+    
+    fam_taxid=\$(cut -f4 matched_species.txt | cut -f1 -d',')
+
+    cut -f5 matched_species.txt | tr "," "\n" | sort -n > new_sp_taxids.txt
+    cut -f6 matched_species.txt | tr "," "\n" > new_fam_taxids.txt
+
+    # prepare old taxids for comparison
+    sort -nu $species_taxids > old_sp_taxids.txt
+    sort -nu $relatives_taxids | grep -v "\$fam_taxid" > old_fam_taxids.txt
+    
+    touch lineage_comparison.txt
+    diff -q old_sp_taxids.txt new_sp_taxids.txt > lineage_comparison.txt | true
+    diff -q old_fam_taxids.txt new_fam_taxids.txt >> lineage_comparison.txt | true
     """
 }
 
@@ -232,16 +255,36 @@ workflow {
     
     if (params.verbose) {
     species_lst.subscribe { file ->
-            println "Parsed species names are saved to file: $file"
-            println "File content is:\n${file.text}"
+            println "Parsed species names are saved to file: $file\n\n"
+            // println "File content is:\n${file.text}"
         }
     }
             
-    PREPARE_TAXONOMY_NEW(species_lst, taxdump) |
-        subscribe { file ->
-            println "Taxonomy preparation output saved to: $file"
-            println "File content is: ${file.text}"
-        }
+    PREPARE_TAXONOMY_NEW(species_lst, taxdump)
+    taxonomy_final = PREPARE_TAXONOMY_NEW.out.first()
 
-    // PREPARE_TAXONOMY(raw_sequences, taxdump)
+    PREPARE_TAXONOMY(raw_sequences, taxdump)
+        // subscribe { file ->
+        //     println "Lineage comparison output saved to: $file"
+        //     println "File content is:\n${file.text}"
+        // }
+
+    COMPARE_LINEAGES(PREPARE_TAXONOMY.out, taxonomy_final)
+
+    // iterate over lineage comparison outputs and print warnings if there are differences
+    COMPARE_LINEAGES.out.subscribe { tuple ->
+        def (id, comparison_file) = tuple
+        if (comparison_file.text.trim()) {
+            log.warn "Lineage comparison for ${id} shows differences:\n${comparison_file.text}"
+        }
+    }
+
+    // publish:
+    // compares = COMPARE_LINEAGES.out
 }
+
+// output {
+//     compares {
+//         path { sample -> "${sample[0]}/" }
+//     }
+// }

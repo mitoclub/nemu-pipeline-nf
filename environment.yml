@@ -1,4 +1,4 @@
-name: base
+name: nemu
 channels:
   - bioconda
   - conda-forge
