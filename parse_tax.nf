@@ -89,44 +89,28 @@ process PREPARE_TAXONOMY_NEW {
     path taxdump_dir
 
     output:
-    path "taxonomy_final.txt"
+    path "parsed_taxonomy.txt"
 
     script:
     """
     export TAXONKIT_DB=${taxdump_dir}
 
-    # Split numeric taxids and species names in one pass.
-    awk '
-        /^[0-9]+\$/ { print > "taxids.txt"; next }
-        NF { gsub(/_/, " "); print > "species_names.txt" }
-    ' ${species_list}
-    [ -f taxids.txt ] || : > taxids.txt
-    [ -f species_names.txt ] || : > species_names.txt
+    # derive the taxids for input species names, but also keep numeric taxids if they were provided directly
+    taxonkit name2taxid $species_list | awk -F'\t' -v OFS="\t" '\$1 ~ /^[0-9]+\$/ { \$2 = \$1 } { print }' > species_taxids.txt
 
-    # Derive taxids only when species names are present.
-    if [ -s species_names.txt ]; then
-        taxonkit name2taxid --show-rank species_names.txt > species_info.txt || true
-    else
-        : > species_info.txt
-    fi
-
-    # Merge taxids from direct numeric inputs and resolved species names.
-    cut -f2 species_info.txt > taxids_from_names.txt
-    cat taxids.txt taxids_from_names.txt | awk '/^[0-9]+\$/' | sort -n -u > all_taxids.txt
-
-    if [ ! -s all_taxids.txt ]; then
-        : > taxonomy_lineages.txt
+    if [ ! -s species_taxids.txt ]; then
+        : > lineages.txt
         echo '{}' > taxonlist.json
-        : > taxonomy_final.txt
+        : > parsed_taxonomy.txt
         exit 0
     fi
 
-    taxonkit lineage all_taxids.txt | taxonkit reformat -t -f "{f},{s}" > taxonomy_lineages.txt
+    taxonkit lineage --taxid-field 2 species_taxids.txt | taxonkit reformat -t -f "{f},{s}" --lineage-field 3 > lineages.txt
 
     # Prepare a single id list for taxonkit list --ids.
-    tx_list_to_parse=\$(cut -f4 taxonomy_lineages.txt | tr ',' '\n' | awk '/^[0-9]+\$/' | sort -nu | paste -sd ',' -)
+    tx_list_to_parse=\$(cut -f5 lineages.txt | tr ',' '\n' | awk '/^[0-9]+\$/' | sort -nu | paste -sd ',' -)
     if [ -z "\$tx_list_to_parse" ]; then
-        tx_list_to_parse=\$(paste -sd ',' all_taxids.txt)
+        tx_list_to_parse=\$(cut -f2 species_taxids.txt | paste -sd ',' -)
     fi
 
     if [ -n "\$tx_list_to_parse" ]; then
@@ -138,35 +122,39 @@ process PREPARE_TAXONOMY_NEW {
     # extract paths to leaf nodes (species) for lineage parsing in the next step
     cat taxonlist.json | jq -r 'paths(objects | select(length == 0)) | join(",")' > paths.csv
 
-    cut -f4 taxonomy_lineages.txt > fam_sp_taxids.csv
+    cut -f5 lineages.txt > fam_sp_taxids.csv
 
     : > descendants.txt
 
     # iterate over family and species taxids and extract their lineages from taxonlist.json
+    mkdir -p sp_lineage fam_lineage fam_lineage_excl_sp
     while IFS=, read -r fam_taxid sp_taxid; do
         echo "Processing \$fam_taxid and \$sp_taxid"
-        echo \$sp_taxid > sp_lineage_\${sp_taxid}.txt
-        cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage_\${sp_taxid}.txt
-        cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage_\${fam_taxid}.txt
-        
-        grep -vf sp_lineage_\${sp_taxid}.txt fam_lineage_\${fam_taxid}.txt > fam_lineage_excl_sp_\${fam_taxid}.txt
+        echo \$sp_taxid > sp_lineage/\${sp_taxid}.txt
+        cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage/\${sp_taxid}.txt
+        cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
+        grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
 
-        sp_lineage_lst=\$(paste -sd ',' sp_lineage_\${sp_taxid}.txt)
-        fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp_\${fam_taxid}.txt)
+        sp_lineage_lst=\$(paste -sd ',' sp_lineage/\${sp_taxid}.txt)
+        fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
 
         paste <(echo "\$sp_lineage_lst") <(echo "\$fam_lineage_lst") >> descendants.txt
 
     done < fam_sp_taxids.csv
     
-    # TODO name in the input can differ from name in the taxonomy due to db versions
-    # need to explicitly add name from the input to the firsh column
-    paste <(cat taxonomy_lineages.txt) <(cat descendants.txt) >> taxonomy_final.txt
+    # combine lineages and descendants into final taxonomy file if their line numbers match
+    if [ \$(wc -l < lineages.txt) -ne \$(wc -l < descendants.txt) ]; then
+        echo "WARNING: Line count mismatch between lineages and descendants. Check the intermediate files for details."
+        exit 1
+    else
+        paste <(cat lineages.txt) <(cat descendants.txt) >> parsed_taxonomy.txt
+    fi
     """
 }
 
 process COMPARE_LINEAGES {
     tag "$id"
-    errorStrategy 'ignore'
+    // errorStrategy 'ignore'
 
     input:
     tuple val(id), path(query), path(species_taxids), path(relatives_taxids), val(species_name)
@@ -178,22 +166,28 @@ process COMPARE_LINEAGES {
     script:
     """
     # extract species and family taxids for the given species name from taxonomy_final
-    awk -F'\t' -v name="$species_name" '
-        \$1 == name || \$2 ~ name {print}
+    awk -F'\t' -v OFS="\t" -v name="$species_name" '
+        \$1 == name {print}
     ' $taxonomy_final > matched_species.txt
-    
-    fam_taxid=\$(cut -f4 matched_species.txt | cut -f1 -d',')
 
-    cut -f5 matched_species.txt | tr "," "\n" | sort -n > new_sp_taxids.txt
-    cut -f6 matched_species.txt | tr "," "\n" > new_fam_taxids.txt
+    # prepare new taxids for comparison
+    cut -f6 matched_species.txt | tr "," "\n" | sort -n > new_sp_taxids.txt
+    cut -f7 matched_species.txt | tr "," "\n" > new_fam_taxids.txt
 
     # prepare old taxids for comparison
+    fam_taxid=\$(cut -f5 matched_species.txt | cut -f1 -d',')
     sort -nu $species_taxids > old_sp_taxids.txt
-    sort -nu $relatives_taxids | grep -v "\$fam_taxid" > old_fam_taxids.txt
+    sort -nu $relatives_taxids | grep -Ev "^\$fam_taxid\$" > old_fam_taxids.txt
     
     touch lineage_comparison.txt
     diff -q old_sp_taxids.txt new_sp_taxids.txt > lineage_comparison.txt | true
+    diff old_sp_taxids.txt new_sp_taxids.txt >> lineage_comparison.txt | true
+    # if lineage_comparison.txt not empty
+    if [ -s lineage_comparison.txt ]; then
+        echo -e "-------\n" >> lineage_comparison.txt
+    fi
     diff -q old_fam_taxids.txt new_fam_taxids.txt >> lineage_comparison.txt | true
+    diff old_fam_taxids.txt new_fam_taxids.txt >> lineage_comparison.txt | true
     """
 }
 
@@ -251,7 +245,7 @@ workflow {
     }
 
     species_lst = raw_sequences.map { _id, species, _seq -> [species] }
-        .unique().flatten().collectFile(name: 'sample.txt', newLine: true, sort: true)
+        .unique().flatten().collectFile(name: 'species_lst.txt', newLine: true, sort: true)
     
     if (params.verbose) {
     species_lst.subscribe { file ->
@@ -275,7 +269,7 @@ workflow {
     COMPARE_LINEAGES.out.subscribe { tuple ->
         def (id, comparison_file) = tuple
         if (comparison_file.text.trim()) {
-            log.warn "Lineage comparison for ${id} shows differences:\n${comparison_file.text}"
+            log.warn "Lineage comparison for ${id} shows differences:\n${comparison_file.parent}\n${comparison_file.text}"
         }
     }
 

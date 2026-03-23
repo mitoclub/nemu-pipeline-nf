@@ -60,140 +60,83 @@ params.spectraType      = "syn"  // TODO implement
 params.calc192          = true   // TODO implement
 
 process PREPARE_TAXONOMY {
-    tag "$id"
-    // TODO optimize the step: process all species names in single run; 
-    // firstly write 2 files: with species names and taxids DONE
-    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) DONE
-    // and later merge before lineages parsing DONE
-    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids (NO, keep all taxids for lineage parsing, user must provide species name or taxid) DONE
-    // try to derive lineages also simultaneously DONE
-    // taxonkit list --json and parse it...
-    // prepare table with id,species,species_taxids,relatives_taxids and pass its rows to the next process
-
-    input:
-    tuple val(id), val(species_name), val(sequence)
-    path taxdump_dir
-
-    output:
-    tuple val(id), path("query.fa"), path("species.taxid"), path("relatives.taxid")
-
-    script:
-    """
-    if [ "${species_name}" = "unknown_species" ]; then
-        touch species.taxid relatives.taxid query.fa
-        exit 0
-    fi
-
-    export TAXONKIT_DB=${taxdump_dir}
-    CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
-
-    if [[ \$CLEAN_NAME =~ ^[0-9]+\$ ]]; then
-        echo "Assuming provided species name is TaxID: \$CLEAN_NAME"
-        SPEC_ID=\$CLEAN_NAME
-        echo "Check existance of TaxID \$SPEC_ID"
-        echo \$SPEC_ID | taxonkit lineage -c > given_taxid_lineage.txt
-        status_code=\$(cut -f2 given_taxid_lineage.txt)
-        if [ \$status_code != \$SPEC_ID ]; then
-            echo "WARNING: Provided TaxID \$SPEC_ID not found in taxonomy database"
-            touch species.taxid relatives.taxid query.fa
-            exit 0
-        fi
-    else
-        echo "Deriving TaxIDs using taxonkit for: \$CLEAN_NAME"
-        
-        # 1. Get TaxID
-        echo "\$CLEAN_NAME" | taxonkit name2taxid | taxonkit lineage -i 2 -r -L > taxid_lineage.txt
-        SPEC_ID_RAW=\$(cut -f2 taxid_lineage.txt)
-        SPEC_RANK=\$(cut -f3 taxid_lineage.txt)
-
-        if [ -z "\$SPEC_ID_RAW" ]; then
-            echo "WARNING: TaxID not found for \$CLEAN_NAME"
-            touch species.taxid relatives.taxid query.fa
-            exit 0
-        fi
-        
-        if [ \$SPEC_RANK = "species" ]; then
-            SPEC_ID=\$SPEC_ID_RAW
-        else
-            # Get species from lineage
-            SPEC_ID=\$(echo \$SPEC_ID_RAW | taxonkit lineage | taxonkit reformat -t -f "{s}" | cut -f4)
-            
-            # if spec_id is empty, fallback to original
-            if [ -z "\$SPEC_ID" ]; then
-                SPEC_ID=\$SPEC_ID_RAW
-            fi
-        fi
-    fi
-    
-    # 2. Get downstream TaxIDs
-    taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
-
-    # 3. Find Family ID  TODO do this single time like in L117 (collect species,genus,family)
-    FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
-
-    if [ -z "\$FAMILY_ID" ]; then
-        echo "WARNING: Family rank not found for \$CLEAN_NAME"
-        touch relatives.taxid
-    else
-        # 4. Get Family members and exclude self
-        taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
-        grep -vFf species.taxid family_all.taxid > relatives.taxid
-    fi
-
-    # Save query
-    echo ">${id}" > query.fa
-    echo "${sequence}" >> query.fa
-    """
-}
-
-process PREPARE_TAXONOMY_NEW {
-    // errorStrategy 'ignore'
-
     input:
     path species_list
     path taxdump_dir
 
     output:
-    path "taxonomy_prepared.txt"
+    path "parsed_taxonomy.txt"
 
     script:
     """
     export TAXONKIT_DB=${taxdump_dir}
 
-    # Split taxids and species names into separate files
-    grep -E "^[0-9]+\$" ${species_list} > taxids.txt
-    grep -Ev "^[0-9]+\$" ${species_list} > species_names.txt
+    # derive the taxids for input species names, but also keep numeric taxids if they were provided directly
+    taxonkit name2taxid $species_list | awk -F'\t' -v OFS="\t" '\$1 ~ /^[0-9]+\$/ { \$2 = \$1 } { print }' > species_taxids.txt
 
-    # Derive taxids for species names
-    taxonkit name2taxid --show-rank species_names.txt > species_info.txt
+    if [ ! -s species_taxids.txt ]; then
+        : > lineages.txt
+        echo '{}' > taxonlist.json
+        : > parsed_taxonomy.txt
+        exit 0
+    fi
 
-    # Concat taxids (taxids.txt and 2nd column of species_info.txt) from both sources and get lineages
-    cut -f2 species_info.txt > taxids_from_names.txt
-    cat taxids.txt taxids_from_names.txt | sort -n | uniq | \
-        taxonkit lineage | taxonkit reformat -t -f "{f},{s}" > taxonomy_lineages.txt
+    taxonkit lineage --taxid-field 2 species_taxids.txt | taxonkit reformat -t -f "{f},{s}" --lineage-field 3 > lineages.txt
 
-    # prepare comma separated lists of taxids for species and relatives
-    tx_list_to_parse=\$(cut -f4 taxonomy_lineages.txt | sed 's/,/\n/' | sort -n | uniq | paste -sd ",")
-    
-    # Get taxonomic information for all taxids in a single run
+    # Prepare a single id list for taxonkit list --ids.
+    tx_list_to_parse=\$(cut -f5 lineages.txt | tr ',' '\n' | awk '/^[0-9]+\$/' | sort -nu | paste -sd ',' -)
+    if [ -z "\$tx_list_to_parse" ]; then
+        tx_list_to_parse=\$(cut -f2 species_taxids.txt | paste -sd ',' -)
+    fi
+
+    if [ -n "\$tx_list_to_parse" ]; then
         taxonkit list --ids "\$tx_list_to_parse" --json > taxonlist.json
+    else
+        echo '{}' > taxonlist.json
+    fi
 
-    # Reformat json to table TODO
+    # extract paths to leaf nodes (species) for lineage parsing in the next step
+    cat taxonlist.json | jq -r 'paths(objects | select(length == 0)) | join(",")' > paths.csv
 
-    # Merge taxonomy_lineages.txt and tax_lists TODO
+    cut -f5 lineages.txt > fam_sp_taxids.csv
 
-    touch taxonomy_prepared.txt
+    : > descendants.txt
+
+    # iterate over family and species taxids and extract their lineages from taxonlist.json
+    mkdir -p sp_lineage fam_lineage fam_lineage_excl_sp
+    while IFS=, read -r fam_taxid sp_taxid; do
+        echo "Processing \$fam_taxid and \$sp_taxid"
+        echo \$sp_taxid > sp_lineage/\${sp_taxid}.txt
+        cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage/\${sp_taxid}.txt
+        cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
+        grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
+
+        sp_lineage_lst=\$(paste -sd ',' sp_lineage/\${sp_taxid}.txt)
+        fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
+
+        paste <(echo "\$sp_lineage_lst") <(echo "\$fam_lineage_lst") >> descendants.txt
+
+    done < fam_sp_taxids.csv
+    
+    # combine lineages and descendants into final taxonomy file if their line numbers match
+    if [ \$(wc -l < lineages.txt) -ne \$(wc -l < descendants.txt) ]; then
+        echo "WARNING: Line count mismatch between lineages and descendants. Check the intermediate files for details."
+        exit 1
+    else
+        paste <(cat lineages.txt) <(cat descendants.txt) >> parsed_taxonomy.txt
+    fi
     """
 }
 
 process TBLASTN {
     tag "$id"
     cpus params.threads
-    errorStrategy 'ignore'
+    // errorStrategy 'ignore'
     
     input:
-    tuple val(id), path(query), path(species_taxids), path(relatives_taxids)
+    tuple val(id), val(species_name), val(sequence)
     val db_path
+    path parsed_taxonomy
     val gencode
     val max_target_seqs
 
@@ -202,14 +145,32 @@ process TBLASTN {
 
     script:
     outfmt="6 saccver pident length qlen gapopen sstart send evalue bitscore sframe"
-    """   
+    """
+    # Save query
+    echo ">${id}" > query.fa
+    echo "${sequence}" >> query.fa
+
+    # extract species and family taxids for the given species name from parsed_taxonomy
+    awk -F'\t' -v OFS="\t" -v name="$species_name" '
+        \$1 == name {print}
+    ' $parsed_taxonomy > matched_species.txt
+
+    if [ ! -s matched_species.txt ]; then
+        echo "No matching species found in taxonomy for ${species_name}. Skipping BLAST."
+        touch blast_species.tsv blast_outgroup.tsv
+        exit 0
+    fi
+
+    cut -f6 matched_species.txt | tr "," "\n" | sort -n > species_taxids.txt
+    cut -f7 matched_species.txt | tr "," "\n" > family_taxids.txt
+    
     # 1. Species BLAST
-    if [ -s ${species_taxids} ]; then
+    if [ -s species_taxids.txt ]; then
         echo "Running Species BLAST..."
-        tblastn -query ${query} -db ${db_path} -db_gencode ${gencode} \
+        tblastn -query query.fa -db ${db_path} -db_gencode ${gencode} \
             -max_target_seqs ${max_target_seqs} \
             -evalue 0.0001 -num_threads ${task.cpus} \
-            -taxidlist ${species_taxids} -no_taxid_expansion \
+            -taxidlist species_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
             -out blast_species.tsv
     else
@@ -219,13 +180,13 @@ process TBLASTN {
     fi
 
     # 2. Outgroup BLAST (Relatives)
-    if [ -s ${relatives_taxids} ]; then
+    if [ -s family_taxids.txt ]; then
         echo "Running Outgroup BLAST..."
         # Only need top 10 hits to find a good outgroup
-        tblastn -query ${query} -db ${db_path} -db_gencode ${gencode} \
+        tblastn -query query.fa -db ${db_path} -db_gencode ${gencode} \
             -max_target_seqs 10 \
             -evalue 0.0001 -num_threads ${task.cpus} \
-            -taxidlist ${relatives_taxids} -no_taxid_expansion \
+            -taxidlist family_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
             -out blast_outgroup.tsv
     else
@@ -995,31 +956,20 @@ workflow blastHead {
         }
     }
 
-    // species_lst = raw_sequences.map { _id, species, _seq -> [species] }
-    //     .unique().flatten().collectFile(name: 'sample.txt', newLine: true, sort: true)
+    species_lst = raw_sequences.map { _id, species, _seq -> [species] }
+        .unique().flatten().collectFile(name: 'species_lst.txt', newLine: true, sort: true)
     
-    // if (params.verbose) {
-    // species_lst.subscribe { file ->
-    //         println "Parsed species names are saved to file: $file"
-    //         println "File content is:\n${file.text}"
-    //     }
-    // }
-            
-    // PREPARE_TAXONOMY_NEW(species_lst, taxdump) |
-    //     subscribe { file ->
-    //         println "Taxonomy preparation output saved to: $file"
-    //         println "File content is: ${file.text}"
-    //     }
-
-    PREPARE_TAXONOMY(raw_sequences, taxdump)
-
-    // Filter missing TaxIDs
-    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, _q, sp_tax, _rel_tax ->
-        if (sp_tax.size() > 0) return true
-        log.warn "SKIPPING ${id}: No valid TaxID found."
-        return false
+    if (params.verbose) {
+    species_lst.subscribe { file ->
+            println "Parsed species names are saved to file: $file\n\n"
+            // println "File content is:\n${file.text}"
+        }
     }
-    TBLASTN(tax_verified_ch, db, gencode, max_target_seqs)
+            
+    PREPARE_TAXONOMY(species_lst, taxdump)
+    parsed_taxonomy = PREPARE_TAXONOMY.out.first()
+
+    TBLASTN(raw_sequences, db, parsed_taxonomy, gencode, max_target_seqs)
     records = TBLASTN.out.filter { id, rec_sp, _rec_rel ->
         if (rec_sp.size() > 0) return true
         log.warn "SKIPPING ${id}: Species records not found."
@@ -1028,7 +978,7 @@ workflow blastHead {
     FILTER_AND_EXPORT(records, db)
     
     // Filter missing sequences
-    fasta_verified_ch = FILTER_AND_EXPORT.out.seqs.filter { id, fasta, outgrp_id ->
+    fasta = FILTER_AND_EXPORT.out.seqs.filter { id, fasta, outgrp_id ->
         if (outgrp_id == '') log.warn "Outgroup not found for ${id}. Continue anyway."
         if (fasta != null && fasta.size() > 0) return true
         log.warn "SKIPPING ${id}: No sequences found."
@@ -1036,12 +986,13 @@ workflow blastHead {
     }
 
     emit:
-    nuc_fasta = fasta_verified_ch
+    nuc_multifasta = fasta
+    taxonomy = parsed_taxonomy
 }
 
 workflow {
     main:
-    NEMU_VERSION="1.1.0"
+    NEMU_VERSION="1.1.1"
 
     // help message
     if (params.help) {
@@ -1095,11 +1046,14 @@ workflow {
         }
 
         // Blast + Filter + Extract Nucleotide Sequences
-        fasta_verified_ch = blastHead(
+        blastHead(
             params.input, params.speciesName, 
             params.taxdump, params.db, params.maxTargetSeqs, 
             params.gencode
         )
+
+        nuc_multifasta = blastHead.out.nuc_multifasta
+        parsed_taxonomy = blastHead.out.taxonomy
         treefile = ""
 
     } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
@@ -1119,6 +1073,7 @@ workflow {
         .stripIndent()
 
         treefile = params.treefile
+        parsed_taxonomy = null
 
         input_fasta = channel.fromPath(params.input) // TODO check existance of input files (currently there is no check)
             .filter { fasta -> 
@@ -1134,7 +1089,7 @@ workflow {
             return false
         }.map { fasta, _type -> fasta }
 
-        fasta_verified_ch = input_fasta_nuc.map { file ->
+        nuc_multifasta = input_fasta_nuc.map { file ->
             def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
 
             // Check if the file contains the outgroupId
@@ -1160,7 +1115,7 @@ workflow {
     }
 
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
-    nemuCore(fasta_verified_ch, params.gencode, 
+    nemuCore(nuc_multifasta, params.gencode, 
              params.minSeqs, aligned, effective_msa_mode, 
              params.model, params.modelAsr, 
              treefile, params.runTreeShrink,
@@ -1177,6 +1132,7 @@ workflow {
         name: 'spectra_total.tsv', keepHeader: true, skip: 1)
 
     publish:
+    parsed_taxonomy = parsed_taxonomy
     spectra_total = spectra_total
     spectra_data = nemuCore.out.spectra_data
     spectra_plots = nemuCore.out.spectra_plots
@@ -1189,8 +1145,9 @@ workflow {
 }
 
 output {
-    spectra_total {}  // TODO move instead of copy
-    readme {}
+    spectra_total { mode 'copy' }
+    parsed_taxonomy { mode 'copy' }
+    readme { mode 'copy' }
     spectra_plots {
         path { sample -> "${sample[0]}/images/" }
     }
