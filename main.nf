@@ -131,7 +131,7 @@ process PREPARE_TAXONOMY {
 process TBLASTN {
     tag "$id"
     cpus params.threads
-    // errorStrategy 'ignore'
+    errorStrategy 'ignore'
     
     input:
     tuple val(id), val(species_name), val(sequence)
@@ -172,7 +172,7 @@ process TBLASTN {
             -evalue 0.0001 -num_threads ${task.cpus} \
             -taxidlist species_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
-            -out blast_species.tsv
+            -out blast_species.tsv || touch blast_species.tsv
     else
         echo "No species taxids found. Skipping Species BLAST."
         touch blast_species.tsv
@@ -188,7 +188,7 @@ process TBLASTN {
             -evalue 0.0001 -num_threads ${task.cpus} \
             -taxidlist family_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
-            -out blast_outgroup.tsv
+            -out blast_outgroup.tsv || touch blast_outgroup.tsv
     else
         echo "No relative taxids found. Skipping Outgroup BLAST."
         touch blast_outgroup.tsv
