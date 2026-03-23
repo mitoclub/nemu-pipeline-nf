@@ -1032,7 +1032,7 @@ workflow {
             .stripIndent()
 
         def combined = ["Input file": params.input,
-                        "BLAST database": params.db + ".ndb",
+                        "BLAST database": params.db + ".ndb", // TODO must be absolute path
                         "Taxdump directory": params.taxdump]
         combined.each { label, path ->
             if (!path || path == "" || !file(path).exists()) {
