@@ -23,7 +23,7 @@ params.taxdump          = ""
 
 // Pipeline Logic
         // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
-params.inputType        = "nucleotide_coding"                     // protein, nucleotide_coding, nucleotide_noncoding
+params.inputType        = "cds"                         // protein, cds, noncds
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
 params.maxTargetSeqs    = 2000
@@ -176,7 +176,6 @@ process TBLASTN {
     else
         echo "No species taxids found. Skipping Species BLAST."
         touch blast_species.tsv
-        # TODO check if the file is empty later
     fi
 
     # 2. Outgroup BLAST (Relatives)
@@ -291,13 +290,13 @@ process ENCODE_AND_RMDUP {
     script:
     """
     # TODO error for nucl input: OUTGRP_ID not specified, it in description
-    # TODO add process for parsing the OUTGRP id from the nucleotide input
     seqkit replace -p .+ -r "seq_{nr}" -w 0 < $sequences > encoded_raw.fasta
     if [ -z "${OUTGRP_ID}" ]; then
         mv encoded_raw.fasta encoded.fasta
     else
         # this logic works only for protein input
         # TODO find line with outgrp sign and replace its basid id (seq_i) with OUTGRP
+        # !!!! align old and encoded headers/ids and replace correctly
         outgrp_id=\$(seqkit seq -i -n < ./encoded_raw.fasta | tail -1)
         seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
     fi
@@ -763,7 +762,7 @@ Main options:
                             is nucleotide, one or several fasta files with orthologous 
                             sequences (including outgroup) required
     --input_type STRING     Type of input sequences: 
-                            protein, nucleotide_coding, nucleotide_noncoding (default: nucleotide_coding)
+                            protein, cds, noncds (default: cds)
     --gencode NUM           Genetic code table (default: 1)
                             Used for codon-aware alignment and annotation of mutations
 
@@ -774,7 +773,7 @@ Nextflow options:
     -output-dir DIR         Specify output directory (default: ./results)
 
 Common options:
-    --threads NUM           Number of threads to use (default: 1) TODO delete if not needed
+    --threads NUM           Number of threads to use (default: 1) TODO update description
     --save-intermeds BOOL   Save intermediate files TODO implement
     --help                  Show this help message and exit
 
@@ -847,8 +846,8 @@ workflow nemuCore {
     }
 
     if (aligned == true) {
-        msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
-            [id, seq]
+        msa_num_verified_ch = seq_num_verified_ch.map { id, fasta, _enc_head, _num_seqs ->
+            [id, fasta]
         }
     } else {
         MSA(seq_num_verified_ch, gencode, msa_mode)
@@ -857,7 +856,7 @@ workflow nemuCore {
             if (num_seqs.toInteger() > min_seqs) return true
             log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs}"
             return false
-        }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+        }.map { id, fasta, _msa_log, _num_seqs -> [id, fasta] }
     }
 
     // Build or use user-provided tree
@@ -1013,7 +1012,7 @@ workflow {
         }
     }
 
-    if (params.inputType == "protein") {
+    if (params.inputType == "protein" || params.inputType == "prot") {
 
         log.info """\
             N E M U   P I P E L I N E  ${NEMU_VERSION}
@@ -1056,8 +1055,11 @@ workflow {
         parsed_taxonomy = blastHead.out.taxonomy
         treefile = ""
 
-    } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
-        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
+    } else if (params.inputType == "nucleotide_coding" || 
+               params.inputType == "nucleotide_noncoding" ||
+               params.inputType == "cds" || params.inputType == "CDS" ||
+               params.inputType == "noncds" || params.inputType == "NONCDS"
+        ) {
         log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
         ================================
@@ -1091,27 +1093,29 @@ workflow {
 
         nuc_multifasta = input_fasta_nuc.map { file ->
             def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
+            def outgroupId = params.outgroupId
 
             // Check if the file contains the outgroupId
             def contains_outgroup = file.text.contains(params.outgroupId)
             if (!contains_outgroup) {
-                log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. Continue anyway."
+                outgroupId = ""
+                log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. This may lead to incorrect rooting of the tree and inaccurate mutation spectra. Continue anyway."
             }
-            [name, file, params.outgroupId]
+            [name, file, outgroupId]
         }
     }
     else {
-        log.error "Invalid input type specified. Set --input-type to 'protein', 'nucleotide_coding', or 'nucleotide_noncoding'."
+        log.error "Invalid input type specified. Set --input-type to 'protein', 'cds', or 'noncds'."
         System.exit(1)
     }
 
     // in case of protein input, alignment is always needed 
-    def aligned = (params.inputType == "protein") ? false : params.aligned
+    def aligned = (params.inputType == "protein" || params.inputType == "prot") ? false : params.aligned
 
     // For noncoding nucleotide input, restrict to mafft (non-codon-aware) alignment
-    def effective_msa_mode = (params.inputType == "nucleotide_noncoding") ? "mafft" : params.msaMode
+    def effective_msa_mode = (params.inputType == "nucleotide_noncoding" || params.inputType == "noncds" || params.inputType == "NONCDS") ? "mafft" : params.msaMode
     if (effective_msa_mode != params.msaMode) {
-        log.warn "Input type is 'nucleotide_noncoding'; overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
+        log.warn "Input type is 'noncds' (nucleotide_noncoding); overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
     }
 
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
