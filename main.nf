@@ -8,8 +8,8 @@
  */
 
 /* Requirements:
- * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.8, mafft, macse, goalign, iqtree2, newick_utils
- * pymutspec 0.0.14 (Python lib)
+ * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.14, mafft, macse, goalign, iqtree2, newick_utils
+ * pymutspec 0.0.15 (Python lib)
  */
 
 // --- Global Parameters ---
