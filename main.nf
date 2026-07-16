@@ -81,6 +81,10 @@ process PREPARE_TAXONOMY {
         exit 0
     fi
 
+    # derive family and species ignoring input taxid/species_name level. 
+    # Note that some taxids have no species or family ranks, or input is a family
+    # lineages.txt columns: 
+    # input_species,taxid,lineage,fam_sp,fam_sp_taxids
     taxonkit lineage --taxid-field 2 species_taxids.txt | taxonkit reformat -t -f "{f},{s}" --lineage-field 3 > lineages.txt
 
     # Prepare a single id list for taxonkit list --ids.
@@ -106,10 +110,19 @@ process PREPARE_TAXONOMY {
     mkdir -p sp_lineage fam_lineage fam_lineage_excl_sp
     while IFS=, read -r fam_taxid sp_taxid; do
         echo "Processing \$fam_taxid and \$sp_taxid"
+        
         echo \$sp_taxid > sp_lineage/\${sp_taxid}.txt
         cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage/\${sp_taxid}.txt
-        cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
-        grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
+
+        if [ ! -f fam_lineage_excl_sp/\${fam_taxid}.txt ]; then
+            if [ -n "\$fam_taxid" ]; then
+                cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
+                grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
+            else
+                # this will create empty '.txt' file single time
+                : > fam_lineage_excl_sp/\${fam_taxid}.txt
+            fi
+        fi
 
         sp_lineage_lst=\$(paste -sd ',' sp_lineage/\${sp_taxid}.txt)
         fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
@@ -266,7 +279,9 @@ with open('extract_coords.txt', 'w') as f:
     " >> blast_filtering_log.txt
     # END OF PYTHON CODE
 
-    OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
+    if grep "Selected Outgroup:" blast_filtering_log.txt; then
+        OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
+    fi
 
     # 4. Extract
     if [ -s extract_coords.txt ]; then
@@ -840,7 +855,7 @@ workflow nemuCore {
 
     // Filter Low Count
     seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
-        if (num_seqs.toInteger() > min_seqs) return true
+        if (num_seqs.toInteger() >= min_seqs) return true
         log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs}"
         return false
     }
@@ -853,7 +868,7 @@ workflow nemuCore {
         MSA(seq_num_verified_ch, gencode, msa_mode)
 
         msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-            if (num_seqs.toInteger() > min_seqs) return true
+            if (num_seqs.toInteger() >= min_seqs) return true
             log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs}"
             return false
         }.map { id, fasta, _msa_log, _num_seqs -> [id, fasta] }
@@ -884,9 +899,13 @@ workflow nemuCore {
         cons_cat_cutoff,
     )
 
-    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations,
-        plot, internal, terminal, branch_spectra
-    )
+    // Filter 'no mutations' runs
+    mut = MUT_EXTRACTION.out.mutations.filter { id, obs, _exp ->
+        if (obs.size() > 0) return true
+        log.warn "SKIPPING ${id}: No mutations reconstructed."
+        return false
+    }
+    DERIVE_SPECTRA(mut, plot, internal, terminal, branch_spectra)
 
     emit:
     syn_spectrum = DERIVE_SPECTRA.out.syn_spectrum
@@ -991,7 +1010,7 @@ workflow blastHead {
 
 workflow {
     main:
-    NEMU_VERSION="1.1.1"
+    NEMU_VERSION="1.1.2"
 
     // help message
     if (params.help) {
@@ -1055,6 +1074,7 @@ workflow {
         parsed_taxonomy = blastHead.out.taxonomy
         treefile = ""
 
+    // TODO fix a lot of names...
     } else if (params.inputType == "nucleotide_coding" || 
                params.inputType == "nucleotide_noncoding" ||
                params.inputType == "cds" || params.inputType == "CDS" ||
@@ -1079,7 +1099,7 @@ workflow {
 
         input_fasta = channel.fromPath(params.input) // TODO check existance of input files (currently there is no check)
             .filter { fasta -> 
-            if (fasta.countFasta() > params.minSeqs) return true
+            if (fasta.countFasta() >= params.minSeqs) return true
             log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
             return false
         }
@@ -1109,10 +1129,10 @@ workflow {
         System.exit(1)
     }
 
-    // in case of protein input, alignment is always needed 
+    // in case of protein input, alignment is always needed TODO see below
     def aligned = (params.inputType == "protein" || params.inputType == "prot") ? false : params.aligned
 
-    // For noncoding nucleotide input, restrict to mafft (non-codon-aware) alignment
+    // For noncoding nucleotide input, restrict to mafft (non-codon-aware) alignment TODO fix this shit-code, make single intermediate variable independent from parameters names...
     def effective_msa_mode = (params.inputType == "nucleotide_noncoding" || params.inputType == "noncds" || params.inputType == "NONCDS") ? "mafft" : params.msaMode
     if (effective_msa_mode != params.msaMode) {
         log.warn "Input type is 'noncds' (nucleotide_noncoding); overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
