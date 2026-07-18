@@ -8,7 +8,7 @@
  */
 
 /* Requirements:
- * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.14, mafft, macse, goalign, iqtree2, newick_utils
+ * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
  * pymutspec 0.0.15 (Python lib)
  */
 
@@ -113,20 +113,21 @@ process PREPARE_TAXONOMY {
         
         echo \$sp_taxid > sp_lineage/\${sp_taxid}.txt
         cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage/\${sp_taxid}.txt
-
-        if [ ! -f fam_lineage_excl_sp/\${fam_taxid}.txt ]; then
-            if [ -n "\$fam_taxid" ]; then
-                cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
-                grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
-            else
-                # this will create empty '.txt' file single time
-                : > fam_lineage_excl_sp/\${fam_taxid}.txt
-            fi
-        fi
-
         sp_lineage_lst=\$(paste -sd ',' sp_lineage/\${sp_taxid}.txt)
-        fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
 
+        if [ -n "\$fam_taxid" ]; then
+            # caching of entire relatives taxid list
+            if [ ! -f fam_lineage/\${fam_taxid}.txt ]; then
+                cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
+            fi
+
+            # exclude taxids of current species from relatives taxid list
+            grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
+            fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
+        else
+            fam_lineage_lst=
+        fi
+        
         paste <(echo "\$sp_lineage_lst") <(echo "\$fam_lineage_lst") >> descendants.txt
 
     done < fam_sp_taxids.csv
@@ -169,7 +170,7 @@ process TBLASTN {
     ' $parsed_taxonomy > matched_species.txt
 
     if [ ! -s matched_species.txt ]; then
-        echo "No matching species found in taxonomy for ${species_name}. Skipping BLAST."
+        echo "No matching species found in taxonomy for ${species_name}. Break execution of blast."
         touch blast_species.tsv blast_outgroup.tsv
         exit 0
     fi

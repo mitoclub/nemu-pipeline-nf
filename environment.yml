@@ -4,7 +4,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.14
+  - python=3.12
   - openjdk=17
   - nextflow=25.10
   - seqkit
