@@ -59,6 +59,9 @@ params.branchSpectra    = false
 params.spectraType      = "syn"  // TODO implement
 params.calc192          = true   // TODO implement
 
+
+// TODO write in each log and warning the step after which this warning is following
+
 process PREPARE_TAXONOMY {
     input:
     path species_list
