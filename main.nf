@@ -22,7 +22,6 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
-        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
 params.inputType        = "cds"                         // protein, cds, noncds
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
@@ -44,7 +43,7 @@ params.runTreeShrink    = true                          // Run TreeShrink to pru
 
 // Mutation Extraction
 params.consCatCutoff    = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
-params.probaArg         = true                          // Use probabilities
+params.probaArg         = true                          // Use probabilities  TODO rename???
 params.uncertaintyCoef  = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
 
 // Spectra Calculation
@@ -59,8 +58,6 @@ params.branchSpectra    = false
 params.spectraType      = "syn"  // TODO implement
 params.calc192          = true   // TODO implement
 
-
-// TODO write in each log and warning the step after which this warning is following
 
 process PREPARE_TAXONOMY {
     input:
@@ -481,7 +478,7 @@ process BUILD_TREE {
         LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
         
         # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
-        # TODO get 10% of branches
+        # TODO get min(5, nseq/20) and check if OUTGRP is in top 5% longest branches
         head -n 5 branches.txt.sorted > branches.txt.top5
         if grep -q OUTGRP branches.txt.top5; then
             nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
@@ -641,7 +638,7 @@ process DERIVE_SPECTRA {
     nmuts=`cat $obs_muts | wc -l`
     if [ \$nmuts -lt 2 ]; then
         echo "ERROR: There are no reconstructed mutations." >&2
-        exit 1 # TODO handle this better check line num in the nextflow level
+        exit 1
     fi
 
     ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
@@ -776,10 +773,10 @@ TODO update to latest
 
 Main options:
     --input FILE            Input FASTA file (required)
-                            If input type is protein, a multi-FASTA with one or several sequences 
-                            required (header format: ">ID [Species name]"). If input type 
-                            is nucleotide, one or several fasta files with orthologous 
-                            sequences (including outgroup) required
+                            If input type is "protein", a multi-FASTA with one or several 
+                            amino acid sequences are required (header format: ">ID [Species name/Taxid]"). 
+                            If input type is "cds" or "noncds", one or several fasta files 
+                            with orthologous sequences (including outgroup) are required
     --input_type STRING     Type of input sequences: 
                             protein, cds, noncds (default: cds)
     --gencode NUM           Genetic code table (default: 1)
@@ -789,7 +786,8 @@ Nextflow options:
     -with-report FILE       Generate execution report
     -with-trace FILE        Generate execution trace
     -with-timeline FILE     Generate execution timeline
-    -output-dir DIR         Specify output directory (default: ./results)
+    -output-dir, -o DIR     Specify output directory (default: ./results)
+    -queue-size, -qs NUM    Specify the number of tasks to run in parallel
 
 Common options:
     --threads NUM           Number of threads to use (default: 1) TODO update description
@@ -797,7 +795,7 @@ Common options:
     --help                  Show this help message and exit
 
 Options for nucleotide input:
-    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId})
+    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId}).
                             Specify outgroup sequence ID in the alignment for rooting the tree
     --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
 
@@ -860,7 +858,7 @@ workflow nemuCore {
     // Filter Low Count
     seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
         if (num_seqs.toInteger() >= min_seqs) return true
-        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs}"
+        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs} (after ENCODE_AND_RMDUP)"
         return false
     }
 
@@ -873,7 +871,7 @@ workflow nemuCore {
 
         msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
             if (num_seqs.toInteger() >= min_seqs) return true
-            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs}"
+            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs} (after MSA)"
             return false
         }.map { id, fasta, _msa_log, _num_seqs -> [id, fasta] }
     }
@@ -903,10 +901,17 @@ workflow nemuCore {
         cons_cat_cutoff,
     )
 
-    // Filter 'no mutations' runs
+    // Filter 'no/low mutations' runs TODO make param instead of hardcoded 5 mutations
     mut = MUT_EXTRACTION.out.mutations.filter { id, obs, _exp ->
-        if (obs.size() > 0) return true
-        log.warn "SKIPPING ${id}: No mutations reconstructed."
+        if (obs.size() > 0) {
+            if (obs.size() > 5) {
+                return true
+            } else {
+                log.warn "SKIPPING ${id}: Only ${obs.size()} mutations reconstructed. (after MUT_EXTRACTION)"
+                return false
+            }
+        }
+        log.warn "SKIPPING ${id}: No mutations reconstructed. (after MUT_EXTRACTION)"
         return false
     }
     DERIVE_SPECTRA(mut, plot, internal, terminal, branch_spectra)
@@ -938,13 +943,13 @@ workflow blastHead {
         .filter { record ->
             def seq = record.seqString.toUpperCase()
             if (seq.length() < 30) {
-                log.warn "SKIPPING ${record.id}: Sequence too short (${seq.length()})."
+                log.warn "SKIPPING ${record.id}: Sequence too short (${seq.length()}). (in blastHead)"
                 return false
             }
             if (seq =~ /[EFILPQZ]/) return true
             def dna_count = seq.count('A') + seq.count('C') + seq.count('G') + seq.count('T') + seq.count('N')
             if ((dna_count / seq.length()) > 0.95) {
-                log.warn "SKIPPING ${record.id}: Looks like DNA."
+                log.warn "SKIPPING ${record.id}: Looks like DNA. (in blastHead)"
                 return false
             }
             return true
@@ -960,7 +965,7 @@ workflow blastHead {
                 if (sp_match) {
                     species = sp_match[0][1]
                 } else {
-                    log.warn "SKIPPING ${record.id}: Species name not found in header. It must be provided in square brackets [Species name]."
+                    log.warn "SKIPPING ${record.id}: Species name not found in header. It must be provided in square brackets [Species name]. (in blastHead)"
                     species = "unknown_species"
                 }
             }
@@ -994,7 +999,7 @@ workflow blastHead {
     TBLASTN(raw_sequences, db, parsed_taxonomy, gencode, max_target_seqs)
     records = TBLASTN.out.filter { id, rec_sp, _rec_rel ->
         if (rec_sp.size() > 0) return true
-        log.warn "SKIPPING ${id}: Species records not found."
+        log.warn "SKIPPING ${id}: Species records not found. (after TBLASTN)"
         return false
     }
     FILTER_AND_EXPORT(records, db)
@@ -1003,7 +1008,7 @@ workflow blastHead {
     fasta = FILTER_AND_EXPORT.out.seqs.filter { id, fasta, outgrp_id ->
         if (outgrp_id == '') log.warn "Outgroup not found for ${id}. Continue anyway."
         if (fasta != null && fasta.size() > 0) return true
-        log.warn "SKIPPING ${id}: No sequences found."
+        log.warn "SKIPPING ${id}: No sequences found. (after FILTER_AND_EXPORT)"
         return false
     }
 
@@ -1104,14 +1109,14 @@ workflow {
         input_fasta = channel.fromPath(params.input) // TODO check existance of input files (currently there is no check)
             .filter { fasta -> 
             if (fasta.countFasta() >= params.minSeqs) return true
-            log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
+            log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING. (during input validation)"
             return false
         }
         CHECK_INPUT_TYPE(input_fasta)
         input_fasta_nuc = CHECK_INPUT_TYPE.out.filter { 
             fasta, type ->
             if (type == "DNA") return true
-            log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING."
+            log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING. (after CHECK_INPUT_TYPE)"
             return false
         }.map { fasta, _type -> fasta }
 
