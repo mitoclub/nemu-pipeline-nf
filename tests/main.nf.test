@@ -43,7 +43,7 @@ nextflow_pipeline {
 
         when {
             params {
-                input = "${projectDir}/test_data/nemu_input/CO1.fasta"
+                input = "${projectDir}/test_data/test_proteins.fasta"
                 inputType = "invalid_type"
                 help = false
             }

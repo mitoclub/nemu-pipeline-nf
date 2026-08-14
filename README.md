@@ -63,7 +63,7 @@ Input fasta should have outgroup record with ID `OUTGRP` (or specified by `--out
 nextflow run main.nf \
   -output-dir results_ecoli \
   --inputType nucleotide_coding \
-  --input "test_data/nemu_input/*.fasta" \
+  --input "test_data/ecoli_nucl_seqs/*.fasta" \
   --outgroupId OUTGRP
 ```
 
@@ -100,6 +100,7 @@ nextflow run main.nf \
 - `--threads` Threads per input (default `1`).
 - `--msa-mode` `auto`, `macse`, `mafft_macse`, or `mafft`.
 - `--minSeqs` Minimum sequence count to continue (default `4`).
+- `--minMuts` Minimum reconstructed mutations to derive a spectrum (default `5`).
 - `--treefile` User-provided tree file path.
 - `--model` IQ-TREE model for tree inference.
 - `--modelAsr` IQ-TREE model for ASR.

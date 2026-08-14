@@ -27,6 +27,7 @@ params.speciesName      = ""                            // Override species name
 params.gencode          = 1
 params.maxTargetSeqs    = 2000
 params.minSeqs          = 4                             // Min sequences to proceed
+params.minMuts          = 5                             // Min reconstructed mutations to derive a spectrum
 params.threads          = 1
 params.saveIntermeds    = false                         // Save intermediate files TODO  
 params.help             = false                          // Show help message
@@ -280,8 +281,9 @@ with open('extract_coords.txt', 'w') as f:
     " >> blast_filtering_log.txt
     # END OF PYTHON CODE
 
-    if grep "Selected Outgroup:" blast_filtering_log.txt; then
-        OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
+    OUTGRP_ID=""
+    if grep -q "Selected Outgroup:" blast_filtering_log.txt; then
+        OUTGRP_ID=\$(sed -n 's/.*Selected Outgroup: \\([^,]*\\).*/\\1/p' blast_filtering_log.txt | head -1 | tr -d '[:space:]')
     fi
 
     # 4. Extract
@@ -305,26 +307,83 @@ process ENCODE_AND_RMDUP {
 
     script:
     """
-    # TODO error for nucl input: OUTGRP_ID not specified, it in description
-    seqkit replace -p .+ -r "seq_{nr}" -w 0 < $sequences > encoded_raw.fasta
+    # Uppercase so MSA, IQ-TREE and pymutspec see consistent DNA letters
+    seqkit seq -u -w 0 "$sequences" > sequences_upper.fasta
+    seqkit replace -p .+ -r "seq_{nr}" -w 0 < sequences_upper.fasta > encoded_raw.fasta
+
     if [ -z "${OUTGRP_ID}" ]; then
         mv encoded_raw.fasta encoded.fasta
     else
-        # this logic works only for protein input
-        # TODO find line with outgrp sign and replace its basid id (seq_i) with OUTGRP
-        # !!!! align old and encoded headers/ids and replace correctly
-        outgrp_id=\$(seqkit seq -i -n < ./encoded_raw.fasta | tail -1)
-        seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
+        # Map the original header that matches OUTGRP_ID onto the encoded seq_{nr} id.
+        # Do not assume the outgroup is the last record (true for BLAST exports, false for nucleotide input).
+        outgrp_encoded=\$(python3 - sequences_upper.fasta encoded_raw.fasta "${OUTGRP_ID}" << 'PY'
+import sys
+
+orig_path, enc_path, og = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def fasta_headers(path):
+    headers = []
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                headers.append(line[1:].rstrip("\\n"))
+    return headers
+
+
+def rec_id(header):
+    return header.split()[0] if header else ""
+
+
+def tokens(header):
+    return header.replace("|", " ").replace(";", " ").replace(":", " ").split()
+
+
+orig_headers = fasta_headers(orig_path)
+enc_ids = [rec_id(h) for h in fasta_headers(enc_path)]
+og_l = og.lower()
+
+matched = None
+for enc, orig in zip(enc_ids, orig_headers):
+    if rec_id(orig).lower() == og_l:
+        matched = enc
+        break
+if matched is None:
+    for enc, orig in zip(enc_ids, orig_headers):
+        if any(t.lower() == og_l for t in tokens(orig)):
+            matched = enc
+            break
+if matched is None:
+    for enc, orig in zip(enc_ids, orig_headers):
+        if og_l in orig.lower():
+            matched = enc
+            break
+print(matched or "")
+PY
+)
+        if [ -z "\$outgrp_encoded" ]; then
+            echo "WARNING: Outgroup ID '${OUTGRP_ID}' not found among original headers. Continuing without OUTGRP rename."
+            mv encoded_raw.fasta encoded.fasta
+        else
+            echo "Mapping original outgroup '${OUTGRP_ID}' (encoded as \$outgrp_encoded) to OUTGRP"
+            seqkit replace -p "^\${outgrp_encoded}\$" -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
+        fi
     fi
 
-    # Save mapping
+    # Save mapping (encoded id -> original header), aligned by record order
     codes=\$(seqkit seq -ni < ./encoded.fasta)
-    original_names=\$(seqkit seq -n < ./${sequences})
+    original_names=\$(seqkit seq -n < ./sequences_upper.fasta)
     paste <(echo "\$codes") <(echo "\$original_names") > encoded_headers.txt
-    
-    # Remove duplicates
-    seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
-    NUM_SEQS=\$(grep -c '>' ./seqs_unique.fasta)
+
+    # Keep OUTGRP if its sequence is identical to an ingroup record (seqkit rmdup keeps the first hit)
+    if grep -qE '^>OUTGRP(\$|[[:space:]])' encoded.fasta; then
+        seqkit grep -r -p '^OUTGRP\$' encoded.fasta > og.fa
+        seqkit grep -r -v -p '^OUTGRP\$' encoded.fasta > rest.fa
+        cat og.fa rest.fa | seqkit rmdup -D duplicated.txt -s -w 0 > seqs_unique.fasta
+    else
+        seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
+    fi
+    NUM_SEQS=\$(grep -c '^>' ./seqs_unique.fasta || true)
     """
 }
 
@@ -351,12 +410,26 @@ process MSA {
     """
     echo "--- STARTING MSA ---" > alignment.log
     echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> alignment.log
-    seqkit seq -m $MIN_SEQ_LEN -g "$sequences" > input_clean.fasta
-    SEQ_COUNT=\$(grep -c "^>" input_clean.fasta)
+    # Keep OUTGRP even if it is shorter than the length cutoff
+    if grep -qE '^>OUTGRP(\$|[[:space:]])' "$sequences"; then
+        seqkit grep -r -p '^OUTGRP\$' "$sequences" > og_keep.fasta
+        seqkit grep -r -v -p '^OUTGRP\$' "$sequences" | seqkit seq -m $MIN_SEQ_LEN -g > input_clean_no_og.fasta
+        cat og_keep.fasta input_clean_no_og.fasta > input_clean.fasta
+    else
+        seqkit seq -m $MIN_SEQ_LEN -g "$sequences" > input_clean.fasta
+    fi
+    SEQ_COUNT=\$(grep -c "^>" input_clean.fasta || true)
     echo "Sequences remaining: \$SEQ_COUNT" >> alignment.log
 
+    if [ "\$SEQ_COUNT" -lt 2 ]; then
+        echo "ERROR: Fewer than 2 sequences after length filter" >> alignment.log
+        touch msa.fasta
+        NUM_SEQS_FLT=0
+        exit 0
+    fi
+
     # MSA Mode Selection
-    if [ $msa_mode = "auto" ]; then
+    if [ "$msa_mode" = "auto" ]; then
         if [ "\$SEQ_COUNT" -gt "$LARGE_DATA_CUTOFF" ]; then
             msa_mode_sh="mafft_macse"
         else
@@ -367,7 +440,7 @@ process MSA {
     fi
 
     # ALIGNMENT
-    if [ \$msa_mode_sh = "mafft_macse" ]; then
+    if [ "\$msa_mode_sh" = "mafft_macse" ]; then
         # Big Data Strategy (Trim -> MacseRepair -> Mafft -> MacseBackTrans)
         macse -prog trimNonHomologousFragments \
             -seq input_clean.fasta -gc_def "$gencode" \
@@ -393,19 +466,26 @@ process MSA {
         # Cleanup intermediate files # TODO enable if needed
         # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
 
-    elif [ \$msa_mode_sh = "macse" ]; then
+    elif [ "\$msa_mode_sh" = "macse" ]; then
         # Pure MACSE
         macse -prog alignSequences \
             -seq input_clean.fasta -gc_def "$gencode" \
             -out_NT raw_alignment.fasta \
             -out_AA raw_alignment_AA.fasta
     
-    elif [ \$msa_mode_sh = "mafft" ]; then
+    elif [ "\$msa_mode_sh" = "mafft" ]; then
         mafft --thread "${task.cpus}" --auto --quiet input_clean.fasta > raw_alignment.fasta
     fi
 
+    if [ ! -s raw_alignment.fasta ]; then
+        echo "ERROR: Alignment produced no sequences" >> alignment.log
+        touch msa.fasta
+        NUM_SEQS_FLT=0
+        exit 0
+    fi
+
     # SANITIZING
-    if [ \$msa_mode_sh != "mafft" ]; then
+    if [ "\$msa_mode_sh" != "mafft" ]; then
         macse -prog exportAlignment \
             -align raw_alignment.fasta \
             -gc_def "$gencode" \
@@ -420,19 +500,71 @@ process MSA {
     fi
 
     # POST-ALIGNMENT FILTERING
-    # Remove columns where >50% of sequences have a gap. 
-    # Remove sequences that are >50% gaps (after site cleaning).
-    goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
-    goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o "filtered_seqs.fasta"
-    seqkit rmdup -s < filtered_seqs.fasta > msa.fasta
+    # For codon alignments, drop whole codon columns so the reading frame is preserved.
+    # For nucleotide (mafft) alignments, per-site gap cleaning is fine.
+    if [ "\$msa_mode_sh" = "mafft" ]; then
+        goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
+        goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o filtered_seqs.fasta
+    else
+        python3 - sanitized_alignment.fasta filtered_seqs.fasta "$MAX_GAP_SITE" "$MAX_GAP_SEQ" << 'PY'
+import sys
+
+inp, outp, site_cut, seq_cut = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+
+def read_fasta(path):
+    recs, name, seq = [], None, []
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    recs.append((name, "".join(seq)))
+                name, seq = line[1:].rstrip("\\n"), []
+            else:
+                seq.append(line.strip())
+        if name is not None:
+            recs.append((name, "".join(seq)))
+    return recs
+
+recs = read_fasta(inp)
+if not recs:
+    open(outp, "w").close()
+    sys.exit(0)
+
+n = len(recs)
+alen = min(len(s) for _, s in recs)
+keep = []
+for i in range(0, alen - (alen % 3), 3):
+    if all(sum(1 for _, s in recs if s[i + j] in "-.") / n <= site_cut for j in range(3)):
+        keep.extend((i, i + 1, i + 2))
+
+filtered = []
+for name, seq in recs:
+    trimmed = "".join(seq[i] for i in keep) if keep else ""
+    if not trimmed:
+        continue
+    gap_frac = sum(1 for c in trimmed if c in "-.") / len(trimmed)
+    if gap_frac <= seq_cut:
+        filtered.append((name, trimmed))
+
+with open(outp, "w") as fh:
+    for name, seq in filtered:
+        fh.write(f">{name}\\n{seq}\\n")
+PY
+    fi
+    if [ ! -s filtered_seqs.fasta ]; then
+        echo "WARNING: No sequences left after gap filtering" >> alignment.log
+        : > msa.fasta
+    else
+        seqkit rmdup -s -w 0 < filtered_seqs.fasta > msa.fasta
+    fi
 
     echo "--- Alignments Stats ---" >> alignment.log
-    seqkit stats raw_alignment.fasta msa.fasta >> alignment.log
-    
-    # N-Content Warning
-    seqkit fx2tab --name --gc --avg-qual "msa.fasta" | \
-        awk '\$4 > 20 {print \$1 " has high N content"}' >> alignment.log
-    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta)
+    seqkit stats sanitized_alignment.fasta msa.fasta >> alignment.log || true
+
+    # N-content warning (base-content N, not GC / quality)
+    seqkit fx2tab --name --base-content N msa.fasta | \
+        awk -F'\\t' '{n=\$2+0; if ((n<=1 && n>0.2) || n>20) print \$1 " has high N content (" \$2 ")"}' >> alignment.log
+    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta || true)
     """
 }
 
@@ -463,7 +595,7 @@ process BUILD_TREE {
         OUTGRP_PARAM=""
     fi
 
-    nseq=\$(grep -c '>' $sequences)
+    nseq=\$(grep -c '^>' $sequences || true)
     if [ $run_treeshrink = true ] && [ \$nseq -gt 10 ]; then
         run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM
         mv treeshrink.treefile treeshrink.nwk
@@ -480,7 +612,7 @@ process BUILD_TREE {
         # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
         # TODO get min(5, nseq/20) and check if OUTGRP is in top 5% longest branches
         head -n 5 branches.txt.sorted > branches.txt.top5
-        if grep -q OUTGRP branches.txt.top5; then
+        if grep -qw OUTGRP branches.txt.top5; then
             nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
         else
             nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
@@ -567,6 +699,7 @@ try:
     svg2png(url='tree.svg', write_to='tree.png')
 except Exception as e:
     print('ERROR: No SVG->PNG converter found (rsvg-convert or cairosvg).')
+    open('tree.png', 'wb').close()
     "
     """
 }
@@ -613,7 +746,9 @@ process MUT_EXTRACTION {
     mv mout/* .
     mv mutations.tsv observed_mutations.tsv
     mv run.log mut_extraction.log
-    gzip expected_mutations.tsv
+    if [ -f expected_mutations.tsv ]; then
+        gzip expected_mutations.tsv
+    fi
     """
 }
 
@@ -627,10 +762,11 @@ process DERIVE_SPECTRA {
     val internal
     val terminal
     val branch_spectra
+    val proba_arg
 
     output:
     path "ms12syn_labeled.txt", emit: syn_spectrum
-    tuple val(id), path("*.tsv"), emit: spectra_data
+    tuple val(id), path("*.tsv"), optional: true, emit: spectra_data
     tuple val(id), path("*.png"), optional: true, emit: spectra_plots
 
     script:
@@ -641,9 +777,12 @@ process DERIVE_SPECTRA {
         exit 1
     fi
 
-    ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
-    if [ $plot = true ]; then
+    ARGS="--exclude OUTGRP,ROOT --mnum192 16 --syn --syn4f --all --nonsyn"
+    if [ "$plot" = "true" ]; then
         ARGS="\$ARGS --plot -x png"
+    fi
+    if [ "$proba_arg" = "true" ]; then
+        ARGS="\$ARGS -p --proba_cutoff 0.3"
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
@@ -699,10 +838,7 @@ process CHECK_INPUT_TYPE {
 
     script:
     """
-    TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
-
-    # TODO uppercase with seqkit
-    # seqkit seq 
+    TYPE=\$(seqkit seq -u "$fasta" | seqkit stats -T | tail -1 | cut -f3) 
     """
 }
 
@@ -760,6 +896,34 @@ boolean commandExists(String command) {
     return proc.exitValue() == 0
 }
 
+boolean fastaHasOutgroup(path, outgroupId) {
+    if (!outgroupId) return false
+    def og = outgroupId.toString()
+    def ogLower = og.toLowerCase()
+    def found = false
+    path.text.split('\n').each { line ->
+        if (found) return
+        if (line.startsWith('>')) {
+            def header = line.substring(1)
+            def parts = header.tokenize()
+            def hid = parts ? parts[0] : ""
+            if (hid.equalsIgnoreCase(og)) {
+                found = true
+                return
+            }
+            def toks = header.replace('|', ' ').replace(';', ' ').replace(':', ' ').tokenize()
+            if (toks.any { it.equalsIgnoreCase(og) }) {
+                found = true
+                return
+            }
+            if (header.toLowerCase().contains(ogLower)) {
+                found = true
+            }
+        }
+    }
+    return found
+}
+
 def printHelpMessage(String version, params) {
     println """
 N E M U   P I P E L I N E  ${version}
@@ -777,7 +941,7 @@ Main options:
                             amino acid sequences are required (header format: ">ID [Species name/Taxid]"). 
                             If input type is "cds" or "noncds", one or several fasta files 
                             with orthologous sequences (including outgroup) are required
-    --input_type STRING     Type of input sequences: 
+    --input-type STRING     Type of input sequences: 
                             protein, cds, noncds (default: cds)
     --gencode NUM           Genetic code table (default: 1)
                             Used for codon-aware alignment and annotation of mutations
@@ -811,6 +975,7 @@ Options for protein input:
 Options for MSA & Phylogeny:
     --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
     --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
+    --min-muts NUM          Minimum reconstructed mutations to derive a spectrum (default: ${params.minMuts})
     --treefile FILE         Input tree file (optional; default: build tree de novo)
     --model STRING          IQ-TREE substitution model (default: ${params.model})
     --model-asr STRING      ASR substitution model (default: ${params.modelAsr})
@@ -901,20 +1066,23 @@ workflow nemuCore {
         cons_cat_cutoff,
     )
 
-    // Filter 'no/low mutations' runs TODO make param instead of hardcoded 5 mutations
+    // Filter runs with too few reconstructed mutations (file size is not a mutation count)
     mut = MUT_EXTRACTION.out.mutations.filter { id, obs, _exp ->
-        if (obs.size() > 0) {
-            if (obs.size() > 5) {
-                return true
-            } else {
-                log.warn "SKIPPING ${id}: Only ${obs.size()} mutations reconstructed. (after MUT_EXTRACTION)"
-                return false
-            }
+        def nmuts = 0
+        if (obs && obs.exists() && obs.size() > 0) {
+            nmuts = Math.max(0, obs.countLines() - 1)
         }
-        log.warn "SKIPPING ${id}: No mutations reconstructed. (after MUT_EXTRACTION)"
+        if (nmuts >= params.minMuts) {
+            return true
+        }
+        if (nmuts > 0) {
+            log.warn "SKIPPING ${id}: Only ${nmuts} mutations reconstructed (minMuts=${params.minMuts}). (after MUT_EXTRACTION)"
+        } else {
+            log.warn "SKIPPING ${id}: No mutations reconstructed. (after MUT_EXTRACTION)"
+        }
         return false
     }
-    DERIVE_SPECTRA(mut, plot, internal, terminal, branch_spectra)
+    DERIVE_SPECTRA(mut, plot, internal, terminal, branch_spectra, proba_arg)
 
     emit:
     syn_spectrum = DERIVE_SPECTRA.out.syn_spectrum
@@ -1019,7 +1187,7 @@ workflow blastHead {
 
 workflow {
     main:
-    NEMU_VERSION="1.1.2"
+    NEMU_VERSION="1.1.3"
 
     // help message
     if (params.help) {
@@ -1058,14 +1226,26 @@ workflow {
             """
             .stripIndent()
 
-        def combined = ["Input file": params.input,
-                        "BLAST database": params.db + ".ndb", // TODO must be absolute path
-                        "Taxdump directory": params.taxdump]
-        combined.each { label, path ->
-            if (!path || path == "" || !file(path).exists()) {
-                log.error "${label} path '${path}' is empty or does not exist."
-                System.exit(1)
-            }
+        if (!params.input) {
+            log.error "Input file path is empty or does not exist."
+            System.exit(1)
+        }
+        def db_ok = params.db && (
+            file("${params.db}.ndb").exists() ||
+            file("${params.db}.nin").exists() ||
+            file("${params.db}.nal").exists()
+        )
+        if (!file(params.input).exists()) {
+            log.error "Input file path '${params.input}' is empty or does not exist."
+            System.exit(1)
+        }
+        if (!db_ok) {
+            log.error "BLAST database path '${params.db}' is empty or does not exist (expected ${params.db}.ndb, .nin, or .nal)."
+            System.exit(1)
+        }
+        if (!params.taxdump || !file(params.taxdump).exists()) {
+            log.error "Taxdump directory path '${params.taxdump}' is empty or does not exist."
+            System.exit(1)
         }
         if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
             log.error "Invalid MSA mode specified. Set --msa-mode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
@@ -1106,7 +1286,12 @@ workflow {
         treefile = params.treefile
         parsed_taxonomy = null
 
-        input_fasta = channel.fromPath(params.input) // TODO check existance of input files (currently there is no check)
+        if (!params.input) {
+            log.error "Input file is required. Set --input."
+            System.exit(1)
+        }
+
+        input_fasta = channel.fromPath(params.input, checkIfExists: true)
             .filter { fasta -> 
             if (fasta.countFasta() >= params.minSeqs) return true
             log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING. (during input validation)"
@@ -1120,17 +1305,15 @@ workflow {
             return false
         }.map { fasta, _type -> fasta }
 
-        nuc_multifasta = input_fasta_nuc.map { file ->
-            def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
+        nuc_multifasta = input_fasta_nuc.map { fasta_file ->
+            def name = fasta_file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
             def outgroupId = params.outgroupId
 
-            // Check if the file contains the outgroupId
-            def contains_outgroup = file.text.contains(params.outgroupId)
-            if (!contains_outgroup) {
+            if (!fastaHasOutgroup(fasta_file, params.outgroupId)) {
                 outgroupId = ""
-                log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. This may lead to incorrect rooting of the tree and inaccurate mutation spectra. Continue anyway."
+                log.warn "Outgroup ID '${params.outgroupId}' not found in FASTA headers of ${name}. This may lead to incorrect rooting of the tree and inaccurate mutation spectra. Continue anyway."
             }
-            [name, file, outgroupId]
+            [name, fasta_file, outgroupId]
         }
     }
     else {

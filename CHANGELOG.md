@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-08-14
+
+### Fixed
+
+- Outgroup remapping in `ENCODE_AND_RMDUP` now matches the original FASTA header/ID instead of always relabeling the last sequence (broke nucleotide input when OUTGRP was not last, and could rename `seq_1` plus `seq_10+` via unanchored regex)
+- Nucleotide outgroup detection now inspects FASTA headers rather than a raw substring of the whole file
+- `seqkit rmdup` no longer drops OUTGRP when its sequence is identical to an ingroup record
+- `FILTER_AND_EXPORT` always sets `OUTGRP_ID` so missing outgroups continue instead of failing the process
+- Mutation-count filter after `MUT_EXTRACTION` uses the number of table rows, not file size in bytes (`--min-muts`)
+- Nucleotide `--input` globs that match nothing now fail (`checkIfExists`)
+- Coding MSA gap cleaning now drops codon columns (multiples of 3) so the reading frame is preserved
+- N-content warning uses `seqkit fx2tab --base-content N` instead of GC/quality columns
+- Spectra calculation passes `--proba` when mutation extraction used probabilities
+- Sequences are uppercased before encoding; BLAST DB existence accepts `.ndb`, `.nin`, or `.nal`
+- Example E. coli FASTA outgroup headers renamed from `>outgroup` to `>OUTGRP` to match the documented default
+
 ## [1.1.0] - 2026-03-11
 
 ### Added
