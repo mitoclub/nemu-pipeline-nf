@@ -283,7 +283,7 @@ with open('extract_coords.txt', 'w') as f:
 
     OUTGRP_ID=""
     if grep -q "Selected Outgroup:" blast_filtering_log.txt; then
-        OUTGRP_ID=\$(sed -n 's/.*Selected Outgroup: \\([^,]*\\).*/\\1/p' blast_filtering_log.txt | head -1 | tr -d '[:space:]')
+        OUTGRP_ID=\$(sed -n 's/.*Selected Outgroup: \\([^,]*\\).*/\\1/p' blast_filtering_log.txt)
     fi
 
     # 4. Extract
@@ -341,21 +341,20 @@ def tokens(header):
 
 orig_headers = fasta_headers(orig_path)
 enc_ids = [rec_id(h) for h in fasta_headers(enc_path)]
-og_l = og.lower()
 
 matched = None
 for enc, orig in zip(enc_ids, orig_headers):
-    if rec_id(orig).lower() == og_l:
+    if rec_id(orig) == og:
         matched = enc
         break
 if matched is None:
     for enc, orig in zip(enc_ids, orig_headers):
-        if any(t.lower() == og_l for t in tokens(orig)):
+        if any(t == og for t in tokens(orig)):
             matched = enc
             break
 if matched is None:
     for enc, orig in zip(enc_ids, orig_headers):
-        if og_l in orig.lower():
+        if og in orig:
             matched = enc
             break
 print(matched or "")
@@ -375,14 +374,8 @@ PY
     original_names=\$(seqkit seq -n < ./sequences_upper.fasta)
     paste <(echo "\$codes") <(echo "\$original_names") > encoded_headers.txt
 
-    # Keep OUTGRP if its sequence is identical to an ingroup record (seqkit rmdup keeps the first hit)
-    if grep -qE '^>OUTGRP(\$|[[:space:]])' encoded.fasta; then
-        seqkit grep -r -p '^OUTGRP\$' encoded.fasta > og.fa
-        seqkit grep -r -v -p '^OUTGRP\$' encoded.fasta > rest.fa
-        cat og.fa rest.fa | seqkit rmdup -D duplicated.txt -s -w 0 > seqs_unique.fasta
-    else
-        seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
-    fi
+    # Remove duplicates
+    seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
     NUM_SEQS=\$(grep -c '^>' ./seqs_unique.fasta || true)
     """
 }
@@ -561,9 +554,9 @@ PY
     echo "--- Alignments Stats ---" >> alignment.log
     seqkit stats sanitized_alignment.fasta msa.fasta >> alignment.log || true
 
-    # N-content warning (base-content N, not GC / quality)
+    # N-content warning (seqkit --base-content is percent 0-100)
     seqkit fx2tab --name --base-content N msa.fasta | \
-        awk -F'\\t' '{n=\$2+0; if ((n<=1 && n>0.2) || n>20) print \$1 " has high N content (" \$2 ")"}' >> alignment.log
+        awk -F'\\t' '{n=\$2+0; if (n>20) print \$1 " has high N content (" \$2 "%)"}' >> alignment.log || true
     NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta || true)
     """
 }
