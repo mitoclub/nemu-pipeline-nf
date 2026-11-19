@@ -72,6 +72,24 @@ nextflow_pipeline {
         }
     }
 
+    test("Should reject a deprecated input type name") {
+
+        tag "invalid_input_type"
+        tag "parameter_validation"
+
+        when {
+            params {
+                input = "${projectDir}/test_data/test_proteins.fasta"
+                inputType = "nucleotide_coding"
+                help = false
+            }
+        }
+
+        then {
+            assert workflow.failed
+        }
+    }
+
     test("Should fail when nucleotide input path is missing") {
 
         tag "nucleotide_missing_input"
@@ -80,7 +98,7 @@ nextflow_pipeline {
         when {
             params {
                 input = "${projectDir}/test_data/does_not_exist/*.fasta"
-                inputType = "nucleotide_coding"
+                inputType = "cds"
                 help = false
             }
         }

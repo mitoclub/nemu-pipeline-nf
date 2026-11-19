@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-11-19
+## [2.0.0] - 2026-11-19
+
+### Added
+
+BLAST identity and coverage, alignment gap fractions, the ancestral-state probability cutoff, the TreeShrink quantile, the 192-class observation minimum, and the outgroup branch rank are parameters. The defaults are the previous fixed values: `--minIdentSpecies 80`, `--minCovSpecies 0.5`, `--minIdentOutgroup 70`, `--minCovOutgroup 0.5`, `--maxGapSeq 0.5`, `--maxGapSite 0.5`, `--probaCutoff 0.3`, `--treeShrinkQuantile 0.1`, `--mnum192 16`, and `--outgroupTopN 5`. Identity values are percents. Coverage, gap fractions, the probability cutoff, and the TreeShrink quantile are fractions from 0 to 1.
+
+### Changed
+
+`--inputType` accepts only `protein`, `cds`, and `noncds`. Older names (`prot`, `CDS`, `nucleotide_coding`, `NONCDS`, `nucleotide_noncoding`) stop the run and name the value to use instead. `noncds` still forces MAFFT.
+
+### Fixed
+
+A nucleotide run no longer stops at the start because the taxonomy output is empty. `parsed_taxonomy.txt` is published only for protein input.
+
+## [1.2.0] - 2026-09-07
 
 ### Added
 
