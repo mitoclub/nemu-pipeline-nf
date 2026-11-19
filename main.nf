@@ -225,61 +225,7 @@ process FILTER_AND_EXPORT {
 
     script:
     """
-    python3 -c "
-print('INFO: Filtering BLAST hits')
-hits = []
-outgroup_hits = []
-
-# Thresholds
-MIN_IDENT_SPECIES = 80.0
-MIN_COV_SPECIES = 0.5
-MIN_IDENT_OUTGROUP = 70.0 
-MIN_COV_OUTGROUP = 0.5
-
-def parse_blast(filename, hits_list, min_ident, min_cov):
-    try:
-        with open(filename) as f:
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) < 10: continue
-                sacc, pident = parts[0], float(parts[1])
-                length, qlen = float(parts[2]), float(parts[3])
-                bitscore, sframe = float(parts[8]), int(parts[9])
-                sstart, send = parts[5], parts[6]
-                coverage = length / qlen
-                
-                if pident >= min_ident and coverage >= min_cov:
-                    hits_list.append({
-                        'sacc': sacc, 'sstart': sstart, 'send': send, 
-                        'sframe': sframe, 'bitscore': bitscore, 'pident': pident
-                    })
-    except FileNotFoundError:
-        pass
-
-parse_blast('$records_species',  hits,  MIN_IDENT_SPECIES,  MIN_COV_SPECIES)
-parse_blast('$records_relatives', outgroup_hits, MIN_IDENT_OUTGROUP, MIN_COV_OUTGROUP)
-
-if outgroup_hits:
-    outgroup_hits.sort(key=lambda x: x['bitscore'], reverse=True)
-    best_out = outgroup_hits[0]
-    print(f\\"Selected Outgroup: {best_out['sacc']}, Ident: {best_out['pident']}%, Score: {best_out['bitscore']}\\")
-    hits.append(best_out)    
-else:
-    print('WARNING: No valid outgroup found.')
-
-print(f'Found {len(hits)} valid species hits.')
-final_coords = []
-for h in hits:
-    # Logic: ID start-end strand
-    strand = 'minus' if h['sframe'] < 0 else 'plus'
-    x, y = (h['sstart'], h['send']) if strand == 'plus' else (h['send'], h['sstart'])
-    final_coords.append(f\\"{h['sacc']} {x}-{y} {strand}\\")
-
-with open('extract_coords.txt', 'w') as f:
-    for line in final_coords:
-        f.write(line + '\\n')
-    " >> blast_filtering_log.txt
-    # END OF PYTHON CODE
+    filter_blast.py "$records_species" "$records_relatives" extract_coords.txt >> blast_filtering_log.txt
 
     OUTGRP_ID=""
     if grep -q "Selected Outgroup:" blast_filtering_log.txt; then
@@ -314,52 +260,14 @@ process ENCODE_AND_RMDUP {
     if [ -z "${OUTGRP_ID}" ]; then
         mv encoded_raw.fasta encoded.fasta
     else
+        # check the number of OUTGRP_ID in the fasta file
+        #n_outgrp=\$(seqkit grep -nrC -p "${OUTGRP_ID}" sequences_upper.fasta)
+        #if [ "\$n_outgrp" -gt 1 ]; then
+        #    echo "ERROR: Outgroup ID '${OUTGRP_ID}' found \$n_outgrp times in the fasta file. Exiting (id: ${id})."
+        #    exit 1
+        #fi
         # Map the original header that matches OUTGRP_ID onto the encoded seq_{nr} id.
-        # Do not assume the outgroup is the last record (true for BLAST exports, false for nucleotide input).
-        outgrp_encoded=\$(python3 - sequences_upper.fasta encoded_raw.fasta "${OUTGRP_ID}" << 'PY'
-import sys
-
-orig_path, enc_path, og = sys.argv[1], sys.argv[2], sys.argv[3]
-
-
-def fasta_headers(path):
-    headers = []
-    with open(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                headers.append(line[1:].rstrip("\\n"))
-    return headers
-
-
-def rec_id(header):
-    return header.split()[0] if header else ""
-
-
-def tokens(header):
-    return header.replace("|", " ").replace(";", " ").replace(":", " ").split()
-
-
-orig_headers = fasta_headers(orig_path)
-enc_ids = [rec_id(h) for h in fasta_headers(enc_path)]
-
-matched = None
-for enc, orig in zip(enc_ids, orig_headers):
-    if rec_id(orig) == og:
-        matched = enc
-        break
-if matched is None:
-    for enc, orig in zip(enc_ids, orig_headers):
-        if any(t == og for t in tokens(orig)):
-            matched = enc
-            break
-if matched is None:
-    for enc, orig in zip(enc_ids, orig_headers):
-        if og in orig:
-            matched = enc
-            break
-print(matched or "")
-PY
-)
+        outgrp_encoded=\$(match_outgroup.py sequences_upper.fasta encoded_raw.fasta "${OUTGRP_ID}")
         if [ -z "\$outgrp_encoded" ]; then
             echo "WARNING: Outgroup ID '${OUTGRP_ID}' not found among original headers. Continuing without OUTGRP rename."
             mv encoded_raw.fasta encoded.fasta
@@ -499,50 +407,7 @@ process MSA {
         goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
         goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o filtered_seqs.fasta
     else
-        python3 - sanitized_alignment.fasta filtered_seqs.fasta "$MAX_GAP_SITE" "$MAX_GAP_SEQ" << 'PY'
-import sys
-
-inp, outp, site_cut, seq_cut = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
-
-def read_fasta(path):
-    recs, name, seq = [], None, []
-    with open(path) as fh:
-        for line in fh:
-            if line.startswith(">"):
-                if name is not None:
-                    recs.append((name, "".join(seq)))
-                name, seq = line[1:].rstrip("\\n"), []
-            else:
-                seq.append(line.strip())
-        if name is not None:
-            recs.append((name, "".join(seq)))
-    return recs
-
-recs = read_fasta(inp)
-if not recs:
-    open(outp, "w").close()
-    sys.exit(0)
-
-n = len(recs)
-alen = min(len(s) for _, s in recs)
-keep = []
-for i in range(0, alen - (alen % 3), 3):
-    if all(sum(1 for _, s in recs if s[i + j] in "-.") / n <= site_cut for j in range(3)):
-        keep.extend((i, i + 1, i + 2))
-
-filtered = []
-for name, seq in recs:
-    trimmed = "".join(seq[i] for i in keep) if keep else ""
-    if not trimmed:
-        continue
-    gap_frac = sum(1 for c in trimmed if c in "-.") / len(trimmed)
-    if gap_frac <= seq_cut:
-        filtered.append((name, trimmed))
-
-with open(outp, "w") as fh:
-    for name, seq in filtered:
-        fh.write(f">{name}\\n{seq}\\n")
-PY
+        clean_codon_gaps.py sanitized_alignment.fasta filtered_seqs.fasta "$MAX_GAP_SITE" "$MAX_GAP_SEQ"
     fi
     if [ ! -s filtered_seqs.fasta ]; then
         echo "WARNING: No sequences left after gap filtering" >> alignment.log
@@ -1180,7 +1045,7 @@ workflow blastHead {
 
 workflow {
     main:
-    NEMU_VERSION="1.1.3"
+    NEMU_VERSION="1.2.0"
 
     // help message
     if (params.help) {

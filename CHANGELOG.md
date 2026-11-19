@@ -5,21 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-08-14
+## [1.2.0] - 2026-11-19
+
+### Added
+
+`--minMuts` (default 5) sets how many reconstructed mutations a gene needs before a spectrum is derived. The old check compared the observation file’s size in bytes, so real spectra with few mutations were dropped and a large file could pass with almost no mutations.
 
 ### Fixed
 
-- Outgroup remapping in `ENCODE_AND_RMDUP` now matches the original FASTA header/ID instead of always relabeling the last sequence (broke nucleotide input when OUTGRP was not last, and could rename `seq_1` plus `seq_10+` via unanchored regex)
-- Nucleotide outgroup detection now inspects FASTA headers rather than a raw substring of the whole file
-- `seqkit rmdup` no longer drops OUTGRP when its sequence is identical to an ingroup record
-- `FILTER_AND_EXPORT` always sets `OUTGRP_ID` so missing outgroups continue instead of failing the process
-- Mutation-count filter after `MUT_EXTRACTION` uses the number of table rows, not file size in bytes (`--min-muts`)
-- Nucleotide `--input` globs that match nothing now fail (`checkIfExists`)
-- Coding MSA gap cleaning now drops codon columns (multiples of 3) so the reading frame is preserved
-- N-content warning uses `seqkit fx2tab --base-content N` instead of GC/quality columns
-- Spectra calculation passes `--proba` when mutation extraction used probabilities
-- Sequences are uppercased before encoding; BLAST DB existence accepts `.ndb`, `.nin`, or `.nal`
-- Example E. coli FASTA outgroup headers renamed from `>outgroup` to `>OUTGRP` to match the documented default
+Outgroup, alignment, and spectrum steps now follow the sequence the run actually claims to use. Nucleotide outgroups are taken from FASTA headers and renamed from that record, including when OUTGRP is not the last sequence and when encoded ids such as `seq_1` and `seq_10` would previously be rewritten together. A missing outgroup is reported and the protein path continues. Coding alignments drop gappy columns in whole codons so the reading frame stays intact, a short outgroup is kept through the length filter, and sequences are uppercased before encoding. A nucleotide `--input` that matches no files fails immediately. The high-N warning reads the N percentage, spectrum calculation receives `--proba` when mutation extraction used probabilities, and a BLAST database is accepted when `.ndb`, `.nin`, or `.nal` is present.
 
 ## [1.1.0] - 2026-03-11
 
