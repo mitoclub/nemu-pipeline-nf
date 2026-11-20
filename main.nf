@@ -33,9 +33,9 @@ params.minCovOutgroup   = 0.5                           // tblastn query coverag
 params.minSeqs          = 4                             // Min sequences to proceed
 params.minMuts          = 5                             // Min reconstructed mutations to derive a spectrum
 params.threads          = 1
-params.saveIntermeds    = false                         // Save intermediate files TODO  
-params.help             = false                          // Show help message
-params.verbose          = false
+params.saveIntermeds    = false                         // Keep MSA scratch files in the task directory  
+params.help             = false                         // Show help message
+params.verbose          = false                         // Verbose output for debugging (parsing of protein sequences from multifasta)
 
 // MSA & Tree
 params.outgroupId       = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
@@ -332,6 +332,19 @@ process MSA {
     MAX_GAP_SITE=params.maxGapSite
 
     """
+    SAVE_INTERMEDS=${params.saveIntermeds}
+    # Scratch alignments are removed when the task ends. --saveIntermeds keeps them.
+    cleanup_msa() {
+        if [ "\$SAVE_INTERMEDS" = true ]; then
+            return 0
+        fi
+        rm -f og_keep.fasta input_clean_no_og.fasta input_clean.fasta
+        rm -f 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
+        rm -f raw_alignment.fasta raw_alignment_AA.fasta sanitized_alignment.fasta
+        rm -f filtered_sites.fasta filtered_seqs.fasta og.fasta rest.fasta filtered_og_first.fasta
+    }
+    trap cleanup_msa EXIT
+
     echo "--- STARTING MSA ---" > alignment.log
     echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> alignment.log
     # Keep OUTGRP even if it is shorter than the length cutoff
@@ -386,9 +399,6 @@ process MSA {
         macse -prog reportGapsAA2NT \
             -align_AA 5_aligned_protein.faa \
             -seq 3_ungapped.fasta -out_NT raw_alignment.fasta
-
-        # Cleanup intermediate files # TODO enable if needed
-        # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
 
     elif [ "\$msa_mode_sh" = "macse" ]; then
         # Pure MACSE
@@ -851,7 +861,7 @@ Nextflow options:
 
 Common options:
     --threads NUM           Number of threads to use (default: 1) TODO update description
-    --saveIntermeds BOOL    Save intermediate files TODO implement
+    --saveIntermeds BOOL    Keep MSA scratch files in the task directory (default: ${params.saveIntermeds})
     --help                  Show this help message and exit
 
 Options for nucleotide input:

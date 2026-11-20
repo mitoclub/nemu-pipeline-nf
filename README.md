@@ -120,6 +120,7 @@ Parameter names are camelCase (`--inputType`). The defaults below are those in `
 - `--minIdentOutgroup` / `--minCovOutgroup` — outgroup BLAST identity and coverage (defaults `70` and `0.5`).
 - `--threads` — CPUs requested by each task (default `1`).
 - `--msaMode` — `auto`, `macse`, `mafft_macse`, or `mafft` (default `auto`). `auto` uses MACSE for 50 sequences or fewer, and `mafft_macse` when there are more.
+- `--saveIntermeds` — keep the MSA scratch files in the task directory (default `false`).
 - `--maxGapSeq` / `--maxGapSite` — drop sequences or columns whose gap fraction is above this value (default `0.5`).
 - `--minSeqs` — minimum number of sequences required before phylogeny (default `4`).
 - `--minMuts` — minimum number of mutations required before a spectrum is written (default `5`).

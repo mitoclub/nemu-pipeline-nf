@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--minMuts` must be a whole number of at least 1, so `0` is rejected at startup rather than letting a header-only observation file through.
 - Writing an ancestral-state table without its two input paths stops with a usage message.
 - A TreeShrink crash no longer drops the gene. The run continues with the unpruned tree.
+- MSA scratch files are removed when the alignment finishes. `--saveIntermeds` keeps them in the task directory.
 
 ## [1.2.0] - 2026-09-07
 
