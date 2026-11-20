@@ -1,10 +1,10 @@
-name: base
+name: nemu
 channels:
   - bioconda
   - conda-forge
   - defaults
 dependencies:
-  - python=3.8
+  - python=3.12
   - openjdk=17
   - nextflow=25.10
   - seqkit
@@ -19,10 +19,11 @@ dependencies:
   - librsvg
   # - cairosvg
   - gzip
-  - numpy<2.0
-  - pandas<2.0
-  - seaborn==0.12.2
-  - biopython>=1.75
+  - jq
+  - numpy
+  - pandas
+  - seaborn
+  - biopython
   - pip
   - pip:
-    - pymutspec==0.0.14     # Installs collect_mutations.py, calculate_mutspec.py TODO check env creation again
+    - pymutspec==0.0.15     # Installs collect_mutations.py, calculate_mutspec.py TODO check env creation again

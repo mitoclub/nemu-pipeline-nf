@@ -11,3 +11,10 @@ trace-*
 !.pixi/config.toml
 test.nf
 nuc_db*
+params*.json
+prepare_data.py
+test_data/A6.fasta
+*review.md
+.cursor
+*__pycache__
+docs/gkae438.pdf

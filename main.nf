@@ -9,7 +9,7 @@
 
 /* Requirements:
  * Nextflow 25.10, seqkit, taxonkit, BLAST+, Python 3.12, mafft, macse, goalign, iqtree2, newick_utils
- * pymutspec 0.0.14 (Python lib)
+ * pymutspec 0.0.15 (Python lib)
  */
 
 // --- Global Parameters ---
@@ -22,126 +22,134 @@ params.db               = ""
 params.taxdump          = ""
 
 // Pipeline Logic
-        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
-params.inputType        = "nucleotide_coding"                     // protein, nucleotide_coding, nucleotide_noncoding
+params.inputType        = "cds"                         // protein, cds, noncds
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
-params.maxTargetSeqs    = 2000
+params.maxHits          = 2000                          // Max tblastn hits per query
+params.minIdentSpecies  = 80                            // tblastn percent identity, species hits
+params.minCovSpecies    = 0.5                           // tblastn query coverage, species hits
+params.minIdentOutgroup = 70                            // tblastn percent identity, outgroup hit
+params.minCovOutgroup   = 0.5                           // tblastn query coverage, outgroup hit
 params.minSeqs          = 4                             // Min sequences to proceed
+params.minMuts          = 5                             // Min reconstructed mutations to derive a spectrum
 params.threads          = 1
-params.saveIntermeds    = false                         // Save intermediate files TODO  
-params.help             = false                          // Show help message
+params.saveIntermeds    = false                         // Keep MSA scratch files in the task directory  
+params.help             = false                         // Show help message
+params.verbose          = false                         // Verbose output for debugging (parsing of protein sequences from multifasta)
 
 // MSA & Tree
 params.outgroupId       = "OUTGRP"                      // Manually specify outgroup sequence ID for 'nucleotide' input
 params.aligned          = false                         // 'nucleotide' input can be pre-aligned
 params.msaMode          = "auto"                        // auto, macse (accurate codon alignment), mafft_macse (fast codon alignment), mafft
+params.maxGapSeq        = 0.5                           // Drop sequences with a larger gap fraction
+params.maxGapSite       = 0.5                           // Drop alignment columns with a larger gap fraction
 params.treefile         = ""                            // Provide pre-computed tree path to skip tree building
 params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
 params.modelAsr         = "GTR+FO+G4+I"                 // ASR Model
-params.runTreeShrink    = true                          // Run TreeShrink to prune long branches
+params.treeShrink       = true                          // Prune long branches with TreeShrink
+params.treeShrinkQuantile = 0.1                         // TreeShrink branch-length quantile
+params.outgroupTopN     = 5                             // Keep OUTGRP when it is among this many longest branches
 
 // Mutation Extraction
-params.consCatCutoff    = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
-params.probaArg         = true                          // Use probabilities
-params.uncertaintyCoef  = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
+params.rateCutoff       = 0                             // 0 = no cutoff // TODO pass a list of rate categories
+params.proba            = true                          // Weight mutations by ancestral-state probability
+params.minProba         = 0.3                           // Minimum ancestral-state probability
+params.phyloCoef        = true                          // Downweight deep branches // TODO improve the coefficient
 
 // Spectra Calculation
-params.plot             = false                         // Generate plots
+params.plot             = true                          // Generate plots
 
 // Subsets of mutations to derive spectra for
-params.internal         = false                         // TODO rename and terminal too
-params.terminal         = false
-params.branchSpectra    = false
+params.internalBranches = false                         // Also derive spectra for internal branches
+params.terminalBranches = false                         // Also derive spectra for terminal branches
+params.perBranch        = false                         // Also derive one spectrum per branch
 
 // Type of spectra that will be aggregated to main output table 'spectra_total.tsv'. Can be 'syn', 'syn4f', 'nonsyn', 'all'
-params.spectraType      = "syn"  // TODO implement
-params.calc192          = true   // TODO implement
+// params.spectraType      = "syn"  // TODO implement
+// params.calc192          = true   // TODO implement
+params.minMuts192       = 16                            // Minimum observations per 192-class context
+
 
 process PREPARE_TAXONOMY {
-    tag "$id"
-    // TODO optimize the step: process all species names in single run; 
-    // firstly write 2 files: with species names and taxids
-    // then process them separately (e.g. taxonkit name2taxid names.txt --show-rank) 
-    // and later merge before lineages parsing
-    // NOTE THAT WE WORK ON SPECIES LEVEL ONLY, so choose only species taxids
-    // try to derive lineages also simultaneously
-    // taxonkit list --json and parse it...
-    // prepare table with id,species,species_taxids,relatives_taxids and pass its rows to the next process
-
     input:
-    tuple val(id), val(species_name), val(sequence)
+    path species_list
     path taxdump_dir
 
     output:
-    tuple val(id), path("query.fa"), path("species.taxid"), path("relatives.taxid")
+    path "parsed_taxonomy.txt"
 
     script:
     """
-    if [ "${species_name}" = "unknown_species" ]; then
-        touch species.taxid relatives.taxid query.fa
+    export TAXONKIT_DB=${taxdump_dir}
+
+    # derive the taxids for input species names, but also keep numeric taxids if they were provided directly
+    taxonkit name2taxid $species_list | awk -F'\t' -v OFS="\t" '\$1 ~ /^[0-9]+\$/ { \$2 = \$1 } { print }' > species_taxids.txt
+
+    if [ ! -s species_taxids.txt ]; then
+        : > lineages.txt
+        echo '{}' > taxonlist.json
+        : > parsed_taxonomy.txt
         exit 0
     fi
 
-    export TAXONKIT_DB=${taxdump_dir}
-    CLEAN_NAME=\$(echo "${species_name}" | tr '_' ' ')
+    # derive family and species ignoring input taxid/species_name level. 
+    # Note that some taxids have no species or family ranks, or input is a family
+    # lineages.txt columns: 
+    # input_species,taxid,lineage,fam_sp,fam_sp_taxids
+    taxonkit lineage --taxid-field 2 species_taxids.txt | taxonkit reformat -t -f "{f},{s}" --lineage-field 3 > lineages.txt
 
-    if [[ \$CLEAN_NAME =~ ^[0-9]+\$ ]]; then
-        echo "Assuming provided species name is TaxID: \$CLEAN_NAME"
-        SPEC_ID=\$CLEAN_NAME
-        echo "Check existance of TaxID \$SPEC_ID"
-        echo \$SPEC_ID | taxonkit lineage -c > given_taxid_lineage.txt
-        status_code=\$(cut -f2 given_taxid_lineage.txt)
-        if [ \$status_code != \$SPEC_ID ]; then
-            echo "WARNING: Provided TaxID \$SPEC_ID not found in taxonomy database"
-            touch species.taxid relatives.taxid query.fa
-            exit 0
-        fi
+    # Prepare a single id list for taxonkit list --ids.
+    tx_list_to_parse=\$(cut -f5 lineages.txt | tr ',' '\n' | awk '/^[0-9]+\$/' | sort -nu | paste -sd ',' -)
+    if [ -z "\$tx_list_to_parse" ]; then
+        tx_list_to_parse=\$(cut -f2 species_taxids.txt | paste -sd ',' -)
+    fi
+
+    if [ -n "\$tx_list_to_parse" ]; then
+        taxonkit list --ids "\$tx_list_to_parse" --json > taxonlist.json
     else
-        echo "Deriving TaxIDs using taxonkit for: \$CLEAN_NAME"
-        
-        # 1. Get TaxID
-        echo "\$CLEAN_NAME" | taxonkit name2taxid | taxonkit lineage -i 2 -r -L > taxid_lineage.txt
-        SPEC_ID_RAW=\$(cut -f2 taxid_lineage.txt)
-        SPEC_RANK=\$(cut -f3 taxid_lineage.txt)
+        echo '{}' > taxonlist.json
+    fi
 
-        if [ -z "\$SPEC_ID_RAW" ]; then
-            echo "WARNING: TaxID not found for \$CLEAN_NAME"
-            touch species.taxid relatives.taxid query.fa
-            exit 0
-        fi
+    # extract paths to leaf nodes (species) for lineage parsing in the next step
+    cat taxonlist.json | jq -r 'paths(objects | select(length == 0)) | join(",")' > paths.csv
+
+    cut -f5 lineages.txt > fam_sp_taxids.csv
+
+    : > descendants.txt
+
+    # iterate over family and species taxids and extract their lineages from taxonlist.json
+    mkdir -p sp_lineage fam_lineage fam_lineage_excl_sp
+    while IFS=, read -r fam_taxid sp_taxid; do
+        echo "Processing \$fam_taxid and \$sp_taxid"
         
-        if [ \$SPEC_RANK = "species" ]; then
-            SPEC_ID=\$SPEC_ID_RAW
-        else
-            # Get species from lineage
-            SPEC_ID=\$(echo \$SPEC_ID_RAW | taxonkit lineage | taxonkit reformat -t -f "{s}" | cut -f4)
-            
-            # if spec_id is empty, fallback to original
-            if [ -z "\$SPEC_ID" ]; then
-                SPEC_ID=\$SPEC_ID_RAW
+        echo \$sp_taxid > sp_lineage/\${sp_taxid}.txt
+        cat taxonlist.json | jq --arg tax \$sp_taxid -r '.[\$tax]  | paths(objects | select(length == 0)) | join("\n")' | sort -nu >> sp_lineage/\${sp_taxid}.txt
+        sp_lineage_lst=\$(paste -sd ',' sp_lineage/\${sp_taxid}.txt)
+
+        if [ -n "\$fam_taxid" ]; then
+            # caching of entire relatives taxid list
+            if [ ! -f fam_lineage/\${fam_taxid}.txt ]; then
+                cat taxonlist.json | jq --arg tax \$fam_taxid -r '.[\$tax] | paths(objects | select(length == 0)) | join("\n")' | sort -nu > fam_lineage/\${fam_taxid}.txt
             fi
+
+            # exclude taxids of current species from relatives taxid list
+            grep -vf sp_lineage/\${sp_taxid}.txt fam_lineage/\${fam_taxid}.txt > fam_lineage_excl_sp/\${fam_taxid}.txt
+            fam_lineage_lst=\$(paste -sd ',' fam_lineage_excl_sp/\${fam_taxid}.txt)
+        else
+            fam_lineage_lst=
         fi
-    fi
+        
+        paste <(echo "\$sp_lineage_lst") <(echo "\$fam_lineage_lst") >> descendants.txt
+
+    done < fam_sp_taxids.csv
     
-    # 2. Get downstream TaxIDs
-    taxonkit list --ids \$SPEC_ID --indent "" | head -n -1 > species.taxid
-
-    # 3. Find Family ID  TODO do this single time like in L117 (collect species,genus,family)
-    FAMILY_ID=\$(echo \$SPEC_ID | taxonkit lineage | taxonkit reformat -t -f "{f}" | cut -f4)
-
-    if [ -z "\$FAMILY_ID" ]; then
-        echo "WARNING: Family rank not found for \$CLEAN_NAME"
-        touch relatives.taxid
+    # combine lineages and descendants into final taxonomy file if their line numbers match
+    if [ \$(wc -l < lineages.txt) -ne \$(wc -l < descendants.txt) ]; then
+        echo "WARNING: Line count mismatch between lineages and descendants. Check the intermediate files for details."
+        exit 1
     else
-        # 4. Get Family members and exclude self
-        taxonkit list --ids \$FAMILY_ID --indent "" | head -n -1 > family_all.taxid
-        grep -vFf species.taxid family_all.taxid > relatives.taxid
+        paste <(cat lineages.txt) <(cat descendants.txt) >> parsed_taxonomy.txt
     fi
-
-    # Save query
-    echo ">${id} ${species_name}" > query.fa
-    echo "${sequence}" >> query.fa
     """
 }
 
@@ -151,8 +159,9 @@ process TBLASTN {
     errorStrategy 'ignore'
     
     input:
-    tuple val(id), path(query), path(species_taxids), path(relatives_taxids)
+    tuple val(id), val(species_name), val(sequence)
     val db_path
+    path parsed_taxonomy
     val gencode
     val max_target_seqs
 
@@ -161,32 +170,49 @@ process TBLASTN {
 
     script:
     outfmt="6 saccver pident length qlen gapopen sstart send evalue bitscore sframe"
-    """   
+    """
+    # Save query
+    echo ">${id}" > query.fa
+    echo "${sequence}" >> query.fa
+
+    # extract species and family taxids for the given species name from parsed_taxonomy
+    awk -F'\t' -v OFS="\t" -v name="$species_name" '
+        \$1 == name {print}
+    ' $parsed_taxonomy > matched_species.txt
+
+    if [ ! -s matched_species.txt ]; then
+        echo "No matching species found in taxonomy for ${species_name}. Break execution of blast."
+        touch blast_species.tsv blast_outgroup.tsv
+        exit 0
+    fi
+
+    cut -f6 matched_species.txt | tr "," "\n" | sort -n > species_taxids.txt
+    cut -f7 matched_species.txt | tr "," "\n" > family_taxids.txt
+    
     # 1. Species BLAST
-    if [ -s ${species_taxids} ]; then
+    if [ -s species_taxids.txt ]; then
         echo "Running Species BLAST..."
-        tblastn -query ${query} -db ${db_path} -db_gencode ${gencode} \
+        tblastn -query query.fa -db ${db_path} -db_gencode ${gencode} \
             -max_target_seqs ${max_target_seqs} \
             -evalue 0.0001 -num_threads ${task.cpus} \
-            -taxidlist ${species_taxids} -no_taxid_expansion \
+            -taxidlist species_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
-            -out blast_species.tsv
+            -out blast_species.tsv || touch blast_species.tsv
     else
         echo "No species taxids found. Skipping Species BLAST."
         touch blast_species.tsv
-        # TODO check if the file is empty later
     fi
 
     # 2. Outgroup BLAST (Relatives)
-    if [ -s ${relatives_taxids} ]; then
+    if [ -s family_taxids.txt ]; then
         echo "Running Outgroup BLAST..."
         # Only need top 10 hits to find a good outgroup
-        tblastn -query ${query} -db ${db_path} -db_gencode ${gencode} \
+        tblastn -query query.fa -db ${db_path} -db_gencode ${gencode} \
             -max_target_seqs 10 \
             -evalue 0.0001 -num_threads ${task.cpus} \
-            -taxidlist ${relatives_taxids} -no_taxid_expansion \
+            -taxidlist family_taxids.txt -no_taxid_expansion \
             -outfmt "$outfmt" \
-            -out blast_outgroup.tsv
+            -out blast_outgroup.tsv || touch blast_outgroup.tsv
     else
         echo "No relative taxids found. Skipping Outgroup BLAST."
         touch blast_outgroup.tsv
@@ -209,63 +235,17 @@ process FILTER_AND_EXPORT {
 
     script:
     """
-    python3 -c "
-print('INFO: Filtering BLAST hits')
-hits = []
-outgroup_hits = []
+    filter_blast.py "$records_species" "$records_relatives" extract_coords.txt \
+        --min-ident-species ${params.minIdentSpecies} \
+        --min-cov-species ${params.minCovSpecies} \
+        --min-ident-outgroup ${params.minIdentOutgroup} \
+        --min-cov-outgroup ${params.minCovOutgroup} \
+        >> blast_filtering_log.txt
 
-# Thresholds
-MIN_IDENT_SPECIES = 80.0
-MIN_COV_SPECIES = 0.5
-MIN_IDENT_OUTGROUP = 70.0 
-MIN_COV_OUTGROUP = 0.5
-
-def parse_blast(filename, hits_list, min_ident, min_cov):
-    try:
-        with open(filename) as f:
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) < 10: continue
-                sacc, pident = parts[0], float(parts[1])
-                length, qlen = float(parts[2]), float(parts[3])
-                bitscore, sframe = float(parts[8]), int(parts[9])
-                sstart, send = parts[5], parts[6]
-                coverage = length / qlen
-                
-                if pident >= min_ident and coverage >= min_cov:
-                    hits_list.append({
-                        'sacc': sacc, 'sstart': sstart, 'send': send, 
-                        'sframe': sframe, 'bitscore': bitscore, 'pident': pident
-                    })
-    except FileNotFoundError:
-        pass
-
-parse_blast('$records_species',  hits,  MIN_IDENT_SPECIES,  MIN_COV_SPECIES)
-parse_blast('$records_relatives', outgroup_hits, MIN_IDENT_OUTGROUP, MIN_COV_OUTGROUP)
-
-if outgroup_hits:
-    outgroup_hits.sort(key=lambda x: x['bitscore'], reverse=True)
-    best_out = outgroup_hits[0]
-    print(f\\"Selected Outgroup: {best_out['sacc']}, Ident: {best_out['pident']}%, Score: {best_out['bitscore']}\\")
-    hits.append(best_out)    
-else:
-    print('WARNING: No valid outgroup found.')
-
-print(f'Found {len(hits)} valid species hits.')
-final_coords = []
-for h in hits:
-    # Logic: ID start-end strand
-    strand = 'minus' if h['sframe'] < 0 else 'plus'
-    x, y = (h['sstart'], h['send']) if strand == 'plus' else (h['send'], h['sstart'])
-    final_coords.append(f\\"{h['sacc']} {x}-{y} {strand}\\")
-
-with open('extract_coords.txt', 'w') as f:
-    for line in final_coords:
-        f.write(line + '\\n')
-    " >> blast_filtering_log.txt
-    # END OF PYTHON CODE
-
-    OUTGRP_ID=\$(grep -oP "Selected Outgroup: \\K[^,]+" blast_filtering_log.txt)
+    OUTGRP_ID=""
+    if grep -q "Selected Outgroup:" blast_filtering_log.txt; then
+        OUTGRP_ID=\$(sed -n 's/.*Selected Outgroup: \\([^,]*\\).*/\\1/p' blast_filtering_log.txt)
+    fi
 
     # 4. Extract
     if [ -s extract_coords.txt ]; then
@@ -288,22 +268,46 @@ process ENCODE_AND_RMDUP {
 
     script:
     """
-    seqkit replace -p .+ -r "seq_{nr}" -w 0 < $sequences > encoded_raw.fasta
+    # Uppercase so MSA, IQ-TREE and pymutspec see consistent DNA letters
+    seqkit seq -u -w 0 "$sequences" > sequences_upper.fasta
+    seqkit replace -p .+ -r "seq_{nr}" -w 0 < sequences_upper.fasta > encoded_raw.fasta
+
     if [ -z "${OUTGRP_ID}" ]; then
         mv encoded_raw.fasta encoded.fasta
     else
-        outgrp_id=\$(seqkit seq -i -n < ./encoded_raw.fasta | tail -1)
-        seqkit replace -p \${outgrp_id} -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
+        # check the number of OUTGRP_ID in the fasta file
+        #n_outgrp=\$(seqkit grep -nrC -p "${OUTGRP_ID}" sequences_upper.fasta)
+        #if [ "\$n_outgrp" -gt 1 ]; then
+        #    echo "ERROR: Outgroup ID '${OUTGRP_ID}' found \$n_outgrp times in the fasta file. Exiting (id: ${id})."
+        #    exit 1
+        #fi
+        # Map the original header that matches OUTGRP_ID onto the encoded seq_{nr} id.
+        outgrp_encoded=\$(match_outgroup.py sequences_upper.fasta encoded_raw.fasta "${OUTGRP_ID}")
+        if [ -z "\$outgrp_encoded" ]; then
+            echo "WARNING: Outgroup ID '${OUTGRP_ID}' not found among original headers. Continuing without OUTGRP rename."
+            mv encoded_raw.fasta encoded.fasta
+        else
+            echo "Mapping original outgroup '${OUTGRP_ID}' (encoded as \$outgrp_encoded) to OUTGRP"
+            seqkit replace -p "^\${outgrp_encoded}\$" -r "OUTGRP" -w 0 < encoded_raw.fasta > encoded.fasta
+        fi
     fi
 
-    # Save mapping
+    # Save mapping (encoded id -> original header), aligned by record order
     codes=\$(seqkit seq -ni < ./encoded.fasta)
-    original_names=\$(seqkit seq -n < ./${sequences})
+    original_names=\$(seqkit seq -n < ./sequences_upper.fasta)
     paste <(echo "\$codes") <(echo "\$original_names") > encoded_headers.txt
-    
-    # Remove duplicates
-    seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
-    NUM_SEQS=\$(grep -c '>' ./seqs_unique.fasta)
+
+    # seqkit rmdup -s keeps the first copy. The protein path appends the outgroup
+    # last, so move OUTGRP to the front before deduplication.
+    if grep -qE '^>OUTGRP\$' encoded.fasta; then
+        seqkit grep -p 'OUTGRP' encoded.fasta > og.fasta
+        seqkit grep -v -p 'OUTGRP' encoded.fasta > rest.fasta
+        cat og.fasta rest.fasta > encoded_og_first.fasta
+    else
+        cp encoded.fasta encoded_og_first.fasta
+    fi
+    seqkit rmdup -D duplicated.txt -P -s -w 0 < encoded_og_first.fasta > seqs_unique.fasta
+    NUM_SEQS=\$(grep -c '^>' ./seqs_unique.fasta || true)
     """
 }
 
@@ -324,18 +328,45 @@ process MSA {
     // THRESHOLDS
     LARGE_DATA_CUTOFF=50    // Switch to Big Data workflow if seqs > this
     MIN_SEQ_LEN=100          // Pre-filter: remove sequences shorter than 100bp
-    MAX_GAP_SEQ=0.50         // Post-filter: Remove SEQS with >50% gaps
-    MAX_GAP_SITE=0.50        // Post-filter: Remove SITES (columns) with >50% gaps
+    MAX_GAP_SEQ=params.maxGapSeq
+    MAX_GAP_SITE=params.maxGapSite
 
     """
+    SAVE_INTERMEDS=${params.saveIntermeds}
+    # Scratch alignments are removed when the task ends. --saveIntermeds keeps them.
+    cleanup_msa() {
+        if [ "\$SAVE_INTERMEDS" = true ]; then
+            return 0
+        fi
+        rm -f og_keep.fasta input_clean_no_og.fasta input_clean.fasta
+        rm -f 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
+        rm -f raw_alignment.fasta raw_alignment_AA.fasta sanitized_alignment.fasta
+        rm -f filtered_sites.fasta filtered_seqs.fasta og.fasta rest.fasta filtered_og_first.fasta
+    }
+    trap cleanup_msa EXIT
+
     echo "--- STARTING MSA ---" > alignment.log
     echo "[0/5] Pre-filtering short sequences (<${MIN_SEQ_LEN}bp)..." >> alignment.log
-    seqkit seq -m $MIN_SEQ_LEN -g "$sequences" > input_clean.fasta
-    SEQ_COUNT=\$(grep -c "^>" input_clean.fasta)
+    # Keep OUTGRP even if it is shorter than the length cutoff
+    if grep -qE '^>OUTGRP(\$|[[:space:]])' "$sequences"; then
+        seqkit grep -r -p '^OUTGRP\$' "$sequences" > og_keep.fasta
+        seqkit grep -r -v -p '^OUTGRP\$' "$sequences" | seqkit seq -m $MIN_SEQ_LEN -g > input_clean_no_og.fasta
+        cat og_keep.fasta input_clean_no_og.fasta > input_clean.fasta
+    else
+        seqkit seq -m $MIN_SEQ_LEN -g "$sequences" > input_clean.fasta
+    fi
+    SEQ_COUNT=\$(grep -c "^>" input_clean.fasta || true)
     echo "Sequences remaining: \$SEQ_COUNT" >> alignment.log
 
+    if [ "\$SEQ_COUNT" -lt 2 ]; then
+        echo "ERROR: Fewer than 2 sequences after length filter" >> alignment.log
+        touch msa.fasta
+        NUM_SEQS_FLT=0
+        exit 0
+    fi
+
     # MSA Mode Selection
-    if [ $msa_mode = "auto" ]; then
+    if [ "$msa_mode" = "auto" ]; then
         if [ "\$SEQ_COUNT" -gt "$LARGE_DATA_CUTOFF" ]; then
             msa_mode_sh="mafft_macse"
         else
@@ -346,7 +377,7 @@ process MSA {
     fi
 
     # ALIGNMENT
-    if [ \$msa_mode_sh = "mafft_macse" ]; then
+    if [ "\$msa_mode_sh" = "mafft_macse" ]; then
         # Big Data Strategy (Trim -> MacseRepair -> Mafft -> MacseBackTrans)
         macse -prog trimNonHomologousFragments \
             -seq input_clean.fasta -gc_def "$gencode" \
@@ -369,22 +400,26 @@ process MSA {
             -align_AA 5_aligned_protein.faa \
             -seq 3_ungapped.fasta -out_NT raw_alignment.fasta
 
-        # Cleanup intermediate files # TODO enable if needed
-        # rm 1_trimmed.fasta 2_repaired.fasta 3_ungapped.fasta 4_protein.faa 5_aligned_protein.faa
-
-    elif [ \$msa_mode_sh = "macse" ]; then
+    elif [ "\$msa_mode_sh" = "macse" ]; then
         # Pure MACSE
         macse -prog alignSequences \
             -seq input_clean.fasta -gc_def "$gencode" \
             -out_NT raw_alignment.fasta \
             -out_AA raw_alignment_AA.fasta
     
-    elif [ \$msa_mode_sh = "mafft" ]; then
+    elif [ "\$msa_mode_sh" = "mafft" ]; then
         mafft --thread "${task.cpus}" --auto --quiet input_clean.fasta > raw_alignment.fasta
     fi
 
+    if [ ! -s raw_alignment.fasta ]; then
+        echo "ERROR: Alignment produced no sequences" >> alignment.log
+        touch msa.fasta
+        NUM_SEQS_FLT=0
+        exit 0
+    fi
+
     # SANITIZING
-    if [ \$msa_mode_sh != "mafft" ]; then
+    if [ "\$msa_mode_sh" != "mafft" ]; then
         macse -prog exportAlignment \
             -align raw_alignment.fasta \
             -gc_def "$gencode" \
@@ -399,19 +434,35 @@ process MSA {
     fi
 
     # POST-ALIGNMENT FILTERING
-    # Remove columns where >50% of sequences have a gap. 
-    # Remove sequences that are >50% gaps (after site cleaning).
-    goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
-    goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o "filtered_seqs.fasta"
-    seqkit rmdup -s < filtered_seqs.fasta > msa.fasta
+    # For codon alignments, drop whole codon columns so the reading frame is preserved.
+    # For nucleotide (mafft) alignments, per-site gap cleaning is fine.
+    if [ "\$msa_mode_sh" = "mafft" ]; then
+        goalign clean sites -c "$MAX_GAP_SITE" -i sanitized_alignment.fasta -o filtered_sites.fasta
+        goalign clean seqs -c "$MAX_GAP_SEQ" -i filtered_sites.fasta -o filtered_seqs.fasta
+    else
+        clean_codon_gaps.py sanitized_alignment.fasta filtered_seqs.fasta "$MAX_GAP_SITE" "$MAX_GAP_SEQ"
+    fi
+    if [ ! -s filtered_seqs.fasta ]; then
+        echo "WARNING: No sequences left after gap filtering" >> alignment.log
+        : > msa.fasta
+    else
+        if grep -qE '^>OUTGRP(\$|[[:space:]])' filtered_seqs.fasta; then
+            seqkit grep -p 'OUTGRP' filtered_seqs.fasta > og.fasta
+            seqkit grep -v -p 'OUTGRP' filtered_seqs.fasta > rest.fasta
+            cat og.fasta rest.fasta > filtered_og_first.fasta
+        else
+            cp filtered_seqs.fasta filtered_og_first.fasta
+        fi
+        seqkit rmdup -P -s -w 0 < filtered_og_first.fasta > msa.fasta
+    fi
 
     echo "--- Alignments Stats ---" >> alignment.log
-    seqkit stats raw_alignment.fasta msa.fasta >> alignment.log
-    
-    # N-Content Warning
-    seqkit fx2tab --name --gc --avg-qual "msa.fasta" | \
-        awk '\$4 > 20 {print \$1 " has high N content"}' >> alignment.log
-    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta)
+    seqkit stats sanitized_alignment.fasta msa.fasta >> alignment.log || true
+
+    # N-content warning (seqkit --base-content is percent 0-100)
+    seqkit fx2tab --name --base-content N msa.fasta | \
+        awk -F'\\t' '{n=\$2+0; if (n>20) print \$1 " has high N content (" \$2 "%)"}' >> alignment.log || true
+    NUM_SEQS_FLT=\$(grep -c "^>" msa.fasta || true)
     """
 }
 
@@ -430,30 +481,53 @@ process BUILD_TREE {
     tuple val(id), path("msa_filtered.fasta"), path("tree_rerooted.nwk")
 
     script:
-    QUANTILE=0.1
+    QUANTILE=params.treeShrinkQuantile
+    OUTGROUP_TOP_N=params.outgroupTopN
     """
-    echo "Building tree de novo..."
+    echo "Building tree"
+    # TODO add bootstrap support
+    # TODO check modelfinder work
     iqtree2 -s $sequences -m $model -nt $task.cpus --prefix ml
 
-    nseq=\$(grep -c '>' $sequences)
+    # Set OUTGRP_PARAM to "-x OUTGRP" if outgroup is present, else empty string
+    if grep -q '^>OUTGRP' "$sequences"; then
+        OUTGRP_PARAM="-x OUTGRP"
+    else
+        OUTGRP_PARAM=""
+    fi
+
+    nseq=\$(grep -c '^>' $sequences || true)
     if [ $run_treeshrink = true ] && [ \$nseq -gt 10 ]; then
-        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE -x OUTGRP
-        mv treeshrink.treefile treeshrink.nwk
+        # TreeShrink can abort on its own (for example a zero bandwidth on equal branches).
+        # Keep the IQ-TREE tree so this gene is not dropped.
+        if run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM \
+            && [ -s treeshrink.treefile ]; then
+            mv treeshrink.treefile treeshrink.nwk
+        else
+            echo "WARNING: TreeShrink failed for ${id}; continuing with the unpruned tree" >&2
+            cp ml.treefile treeshrink.nwk
+        fi
     else
         mv ml.treefile treeshrink.nwk
     fi
 
-    # Check outgroup "quality"
-    nw_distance -m p -s f -n treeshrink.nwk > branches.txt
-    LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
-    
-    # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
-    # TODO get 10% of branches
-    head -n 5 branches.txt.sorted > branches.txt.top5
-    if grep -q OUTGRP branches.txt.top5; then
-        nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
+    # Determine if OUTGRP is present in the resulting tree
+    if nw_labels treeshrink.nwk | grep -qx 'OUTGRP'; then
+        # Check outgroup "quality"
+        nw_distance -m p -s f -n treeshrink.nwk > branches.txt
+        LC_ALL=C sort -grk 2 branches.txt > branches.txt.sorted
+        
+        # Prune bad outgroup if needed (simple heuristic: if branch to OUTGRP has not so large length)
+        # TODO scale this rank with tree size, for example min(outgroupTopN, nseq/20)
+        head -n $OUTGROUP_TOP_N branches.txt.sorted > branches.txt.top5
+        if grep -qw OUTGRP branches.txt.top5; then
+            nw_reroot -l treeshrink.nwk OUTGRP > tree_rerooted.nwk
+        else
+            nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
+        fi
     else
-        nw_prune treeshrink.nwk OUTGRP | nw_reroot - > tree_rerooted.nwk
+        # No explicit outgroup present: root on the longest branch
+        nw_reroot -l treeshrink.nwk > tree_rerooted.nwk
     fi
 
     # drop sequences not present in the tree
@@ -520,10 +594,8 @@ process DRAW_TREE {
 
     script:
     """
-    ## cut -f2 $nodes_mapping  | cut -d ' ' -f 2-3 | sed 's/[^a-zA-Z0-9\\_]/_/g' | cut -c 1-20 > cleaned_headers.txt
-    
-    cut -f1 -d: $nodes_mapping | sed 's/\t/_/' | cut -c 1-20 > cleaned_headers.txt
-    paste <(cut -f1 $nodes_mapping ) <(cat cleaned_headers.txt) > nodes_mapping_cleaned.txt
+    cut -f2 "$nodes_mapping" | sed 's/[^A-Za-z0-9_]/_/g' | cut -c 1-20 > cleaned_headers.txt
+    paste <(cut -f1 "$nodes_mapping") cleaned_headers.txt > nodes_mapping_cleaned.txt
     
     nw_rename $tree nodes_mapping_cleaned.txt > tree_renamed.nwk
     nw_display -s -b 'visibility:hidden' -i 'visibility:hidden' tree_renamed.nwk > tree.svg
@@ -535,6 +607,7 @@ try:
     svg2png(url='tree.svg', write_to='tree.png')
 except Exception as e:
     print('ERROR: No SVG->PNG converter found (rsvg-convert or cairosvg).')
+    open('tree.png', 'wb').close()
     "
     """
 }
@@ -565,7 +638,7 @@ process MUT_EXTRACTION {
         ARGS="\$ARGS --rates $rates --cat-cutoff $cons_cat_cutoff"
     fi
     if [ $proba_arg = "true" ]; then
-        ARGS="\$ARGS --proba --pcutoff 0.3"
+        ARGS="\$ARGS --proba --pcutoff ${params.minProba}"
     fi
     if [ $uncertainty_coef = "true" ]; then
         ARGS="\$ARGS --phylocoef"
@@ -581,7 +654,9 @@ process MUT_EXTRACTION {
     mv mout/* .
     mv mutations.tsv observed_mutations.tsv
     mv run.log mut_extraction.log
-    gzip expected_mutations.tsv
+    if [ -f expected_mutations.tsv ]; then
+        gzip expected_mutations.tsv
+    fi
     """
 }
 
@@ -595,10 +670,11 @@ process DERIVE_SPECTRA {
     val internal
     val terminal
     val branch_spectra
+    val proba_arg
 
     output:
     path "ms12syn_labeled.txt", emit: syn_spectrum
-    tuple val(id), path("*.tsv"), emit: spectra_data
+    tuple val(id), path("*.tsv"), optional: true, emit: spectra_data
     tuple val(id), path("*.png"), optional: true, emit: spectra_plots
 
     script:
@@ -606,26 +682,26 @@ process DERIVE_SPECTRA {
     nmuts=`cat $obs_muts | wc -l`
     if [ \$nmuts -lt 2 ]; then
         echo "ERROR: There are no reconstructed mutations." >&2
-        exit 1 # TODO handle this better check line num in the nextflow level
+        exit 1
     fi
 
-    ARGS="--exclude OUTGRP,ROOT --mnum192 16 --proba_cutoff 0.3 --syn --syn4f --all --nonsyn"
-    if [ $plot = true ]; then
+    ARGS="--exclude OUTGRP,ROOT --mnum192 ${params.minMuts192} --syn --syn4f --all --nonsyn"
+    if [ "$plot" = "true" ]; then
         ARGS="\$ARGS --plot -x png"
+    fi
+    if [ "$proba_arg" = "true" ]; then
+        ARGS="\$ARGS -p --proba_cutoff ${params.minProba}"
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
-    # TODO replace by pure python code
-
     # TODO fix error "After filtration observed 0 mutations" 36__K10914
     
     # Main Calculation
     calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS
     
     if [ ! -f ms12syn.tsv ]; then
-        # TODO improve filtration quality in the script
-        touch ms12syn_labeled.txt
-        exit 0
+        echo "ERROR: Synonymous spectrum was not written." >&2
+        exit 1
     fi
 
     # Internal
@@ -667,10 +743,7 @@ process CHECK_INPUT_TYPE {
 
     script:
     """
-    TYPE=\$(seqkit stats $fasta -T | tail -1 | cut -f3)
-
-    # TODO uppercase with seqkit
-    # seqkit seq 
+    TYPE=\$(seqkit seq -u "$fasta" | seqkit stats -T | tail -1 | cut -f3) 
     """
 }
 
@@ -728,6 +801,35 @@ boolean commandExists(String command) {
     return proc.exitValue() == 0
 }
 
+boolean fastaHasOutgroup(path, outgroupId) {
+    // Case-sensitive, and the same three checks as match_outgroup.py:
+    // record id, then a header token, then a substring.
+    if (!outgroupId) return false
+    def og = outgroupId.toString()
+    def found = false
+    path.text.split('\n').each { line ->
+        if (found) return
+        if (line.startsWith('>')) {
+            def header = line.substring(1)
+            def parts = header.tokenize()
+            def hid = parts ? parts[0] : ""
+            if (hid == og) {
+                found = true
+                return
+            }
+            def toks = header.replace('|', ' ').replace(';', ' ').replace(':', ' ').tokenize()
+            if (toks.any { it == og }) {
+                found = true
+                return
+            }
+            if (header.contains(og)) {
+                found = true
+            }
+        }
+    }
+    return found
+}
+
 def printHelpMessage(String version, params) {
     println """
 N E M U   P I P E L I N E  ${version}
@@ -741,12 +843,12 @@ TODO update to latest
 
 Main options:
     --input FILE            Input FASTA file (required)
-                            If input type is protein, a multi-FASTA with one or several sequences 
-                            required (header format: ">ID [Species name]"). If input type 
-                            is nucleotide, one or several fasta files with orthologous 
-                            sequences (including outgroup) required
-    --input_type STRING     Type of input sequences: 
-                            protein, nucleotide_coding, nucleotide_noncoding (default: nucleotide_coding)
+                            If input type is "protein", a multi-FASTA with one or several 
+                            amino acid sequences are required (header format: ">ID [Species name/Taxid]"). 
+                            If input type is "cds" or "noncds", one or several fasta files 
+                            with orthologous sequences (including outgroup) are required
+    --inputType STRING      Type of input sequences: 
+                            protein, cds, noncds (default: cds)
     --gencode NUM           Genetic code table (default: 1)
                             Used for codon-aware alignment and annotation of mutations
 
@@ -754,15 +856,16 @@ Nextflow options:
     -with-report FILE       Generate execution report
     -with-trace FILE        Generate execution trace
     -with-timeline FILE     Generate execution timeline
-    -output-dir DIR         Specify output directory (default: ./results)
+    -output-dir, -o DIR     Specify output directory (default: ./results)
+    -queue-size, -qs NUM    Specify the number of tasks to run in parallel
 
 Common options:
-    --threads NUM           Number of threads to use (default: 1) TODO delete if not needed
-    --save-intermeds BOOL   Save intermediate files TODO implement
+    --threads NUM           Number of threads to use (default: 1) TODO update description
+    --saveIntermeds BOOL    Keep MSA scratch files in the task directory (default: ${params.saveIntermeds})
     --help                  Show this help message and exit
 
 Options for nucleotide input:
-    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId})
+    --outgroupId STRING     Outgroup sequence ID (default: ${params.outgroupId}).
                             Specify outgroup sequence ID in the alignment for rooting the tree
     --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
 
@@ -770,33 +873,103 @@ Options for protein input:
     --db PATH               BLAST database path (required for protein input)
     --taxdump DIR           Taxdump directory path (required for protein input)
                             TODO integrate to the container
-    --species-name STRING   Override species name. Useful when you work with proteins 
+    --speciesName STRING    Override species name. Useful when you work with proteins 
                             from single species
-    --max-target-seqs NUM   Max target sequences for BLAST (default: ${params.maxTargetSeqs})
-                            tblastn will collect no more than this number of sequences
+    --maxHits NUM           Maximum tblastn hits per query (default: ${params.maxHits})
+    --minIdentSpecies NUM   Minimum percent identity for species BLAST hits (default: ${params.minIdentSpecies})
+    --minCovSpecies NUM     Minimum query coverage for species BLAST hits (default: ${params.minCovSpecies})
+    --minIdentOutgroup NUM  Minimum percent identity for the outgroup BLAST hit (default: ${params.minIdentOutgroup})
+    --minCovOutgroup NUM    Minimum query coverage for the outgroup BLAST hit (default: ${params.minCovOutgroup})
     
 Options for MSA & Phylogeny:
-    --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
-    --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
+    --msaMode STRING        MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
+    --maxGapSeq NUM         Drop sequences whose gap fraction is above this value (default: ${params.maxGapSeq})
+    --maxGapSite NUM        Drop alignment columns whose gap fraction is above this value (default: ${params.maxGapSite})
+    --minSeqs NUM           Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
+    --minMuts NUM           Minimum reconstructed mutations to derive a spectrum (default: ${params.minMuts})
     --treefile FILE         Input tree file (optional; default: build tree de novo)
     --model STRING          IQ-TREE substitution model (default: ${params.model})
-    --model-asr STRING      ASR substitution model (default: ${params.modelAsr})
-    --run-treeshrink BOOL   Run TreeShrink to prune long branches (default: ${params.runTreeShrink})
+    --modelAsr STRING       ASR substitution model (default: ${params.modelAsr})
+    --treeShrink BOOL       Prune long branches with TreeShrink (default: ${params.treeShrink})
+    --treeShrinkQuantile NUM  TreeShrink branch-length quantile (default: ${params.treeShrinkQuantile})
+    --outgroupTopN NUM      Keep the outgroup when its branch is among this many longest branches (default: ${params.outgroupTopN})
 
 Options for Mutation Extraction:
-    --cons-cat-cutoff NUM   Conservation category cutoff for mutation extraction (default: ${params.consCatCutoff})
-                            0 = no cutoff; only mutations in sites with rate category 
-                            less than or equal to this value will be used
-    --proba-arg BOOL        Use probabilities in mutation extraction (default: ${params.probaArg})
-    --uncertainty-coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
-                            (default: ${params.uncertaintyCoef})
+    --rateCutoff NUM        Drop sites in a rate category above this value (default: ${params.rateCutoff}; 0 keeps every site)
+    --proba BOOL            Weight mutations by ancestral-state probability (default: ${params.proba})
+    --minProba NUM          Minimum ancestral-state probability (default: ${params.minProba})
+    --phyloCoef BOOL        Downweight mutations on deep branches (default: ${params.phyloCoef})
 
 Options for Mutation Spectra Derivation:
     --plot BOOL             Generate barcharts of mutation spectra (default: ${params.plot})
-    --internal BOOL         Derive spectra for internal branches (default: ${params.internal})
-    --terminal BOOL         Derive spectra for terminal branches (default: ${params.terminal})
-    --branch-spectra BOOL   Derive spectra for individual branches (default: ${params.branchSpectra})
+    --internalBranches BOOL Also derive spectra for internal branches (default: ${params.internalBranches})
+    --terminalBranches BOOL Also derive spectra for terminal branches (default: ${params.terminalBranches})
+    --perBranch BOOL        Also derive one spectrum per branch (default: ${params.perBranch})
+    --minMuts192 NUM        Minimum observations for each 192-class context (default: ${params.minMuts192})
 """.stripIndent()
+}
+
+// --inputType is one of protein, cds, noncds. Older spellings are rejected
+// here so the rest of the workflow compares a single name.
+def resolveInputType(raw) {
+    def aliases = [
+        'prot'                 : 'protein',
+        'CDS'                  : 'cds',
+        'nucleotide_coding'    : 'cds',
+        'NONCDS'               : 'noncds',
+        'nucleotide_noncoding' : 'noncds',
+    ]
+    if (raw in ['protein', 'cds', 'noncds']) {
+        return raw
+    }
+    def replacement = aliases[raw]
+    if (replacement) {
+        log.error "Input type '${raw}' is no longer accepted. Use '${replacement}'."
+    } else {
+        log.error "Invalid input type '${raw}'. Set --inputType to 'protein', 'cds', or 'noncds'."
+    }
+    System.exit(1)
+}
+
+def checkThresholds(params) {
+    def fraction = [
+        minCovSpecies: params.minCovSpecies,
+        minCovOutgroup: params.minCovOutgroup,
+        maxGapSeq: params.maxGapSeq,
+        maxGapSite: params.maxGapSite,
+        minProba: params.minProba,
+        treeShrinkQuantile: params.treeShrinkQuantile,
+    ]
+    fraction.each { name, value ->
+        def number = value.toString().toDouble()
+        if (number < 0 || number > 1) {
+            log.error "--${name} must be between 0 and 1 (got ${value})."
+            System.exit(1)
+        }
+    }
+    def percent = [
+        minIdentSpecies: params.minIdentSpecies,
+        minIdentOutgroup: params.minIdentOutgroup,
+    ]
+    percent.each { name, value ->
+        def number = value.toString().toDouble()
+        if (number < 0 || number > 100) {
+            log.error "--${name} is a percent and must be between 0 and 100 (got ${value})."
+            System.exit(1)
+        }
+    }
+    def counts = [
+        minMuts192: params.minMuts192,
+        outgroupTopN: params.outgroupTopN,
+        minMuts: params.minMuts,
+    ]
+    counts.each { name, value ->
+        def number = value.toString().toDouble()
+        if (number < 1 || number != Math.rint(number)) {
+            log.error "--${name} must be an integer of at least 1 (got ${value})."
+            System.exit(1)
+        }
+    }
 }
 
 
@@ -824,23 +997,23 @@ workflow nemuCore {
 
     // Filter Low Count
     seq_num_verified_ch = ENCODE_AND_RMDUP.out.filter { id, _seq, _enc_head, num_seqs ->
-        if (num_seqs.toInteger() > min_seqs) return true
-        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs}"
+        if (num_seqs.toInteger() >= min_seqs) return true
+        log.warn "SKIPPING ${id}: Count ${num_seqs} < ${min_seqs} (after ENCODE_AND_RMDUP)"
         return false
     }
 
     if (aligned == true) {
-        msa_num_verified_ch = seq_num_verified_ch.map { id, seq, _enc_head, _num_seqs ->
-            [id, seq]
+        msa_num_verified_ch = seq_num_verified_ch.map { id, fasta, _enc_head, _num_seqs ->
+            [id, fasta]
         }
     } else {
         MSA(seq_num_verified_ch, gencode, msa_mode)
 
         msa_num_verified_ch = MSA.out.filter { id, _seq, _msa_log, num_seqs ->
-            if (num_seqs.toInteger() > min_seqs) return true
-            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs}"
+            if (num_seqs.toInteger() >= min_seqs) return true
+            log.warn "SKIPPING ${id}: Count after MSA ${num_seqs} < ${min_seqs} (after MSA)"
             return false
-        }.map { id, seq, _msa_log, _num_seqs -> [id, seq] }
+        }.map { id, fasta, _msa_log, _num_seqs -> [id, fasta] }
     }
 
     // Build or use user-provided tree
@@ -868,9 +1041,23 @@ workflow nemuCore {
         cons_cat_cutoff,
     )
 
-    DERIVE_SPECTRA(MUT_EXTRACTION.out.mutations,
-        plot, internal, terminal, branch_spectra
-    )
+    // Filter runs with too few reconstructed mutations (file size is not a mutation count)
+    mut = MUT_EXTRACTION.out.mutations.filter { id, obs, _exp ->
+        def nmuts = 0
+        if (obs && obs.exists() && obs.size() > 0) {
+            nmuts = Math.max(0, obs.countLines() - 1)
+        }
+        if (nmuts >= params.minMuts) {
+            return true
+        }
+        if (nmuts > 0) {
+            log.warn "SKIPPING ${id}: Only ${nmuts} mutations reconstructed (minMuts=${params.minMuts}). (after MUT_EXTRACTION)"
+        } else {
+            log.warn "SKIPPING ${id}: No mutations reconstructed. (after MUT_EXTRACTION)"
+        }
+        return false
+    }
+    DERIVE_SPECTRA(mut, plot, internal, terminal, branch_spectra, proba_arg)
 
     emit:
     syn_spectrum = DERIVE_SPECTRA.out.syn_spectrum
@@ -899,13 +1086,13 @@ workflow blastHead {
         .filter { record ->
             def seq = record.seqString.toUpperCase()
             if (seq.length() < 30) {
-                log.warn "SKIPPING ${record.id}: Sequence too short (${seq.length()})."
+                log.warn "SKIPPING ${record.id}: Sequence too short (${seq.length()}). (in blastHead)"
                 return false
             }
             if (seq =~ /[EFILPQZ]/) return true
             def dna_count = seq.count('A') + seq.count('C') + seq.count('G') + seq.count('T') + seq.count('N')
             if ((dna_count / seq.length()) > 0.95) {
-                log.warn "SKIPPING ${record.id}: Looks like DNA."
+                log.warn "SKIPPING ${record.id}: Looks like DNA. (in blastHead)"
                 return false
             }
             return true
@@ -921,7 +1108,7 @@ workflow blastHead {
                 if (sp_match) {
                     species = sp_match[0][1]
                 } else {
-                    log.warn "SKIPPING ${record.id}: Species name not found in header. It must be provided in square brackets [Species name]."
+                    log.warn "SKIPPING ${record.id}: Species name not found in header. It must be provided in square brackets [Species name]. (in blastHead)"
                     species = "unknown_species"
                 }
             }
@@ -933,41 +1120,49 @@ workflow blastHead {
         }
 
     // show parsed sequences
-    raw_sequences.view { id, species, seq ->
-        "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
+    if (params.verbose) {
+        raw_sequences.view { id, species, seq ->
+            "Parsed sequence: ${id}, species: ${species}, length: ${seq.length()}"
+        }
     }
 
-    PREPARE_TAXONOMY(raw_sequences, taxdump)
-
-    // Filter missing TaxIDs
-    tax_verified_ch = PREPARE_TAXONOMY.out.filter { id, _q, sp_tax, _rel_tax ->
-        if (sp_tax.size() > 0) return true
-        log.warn "SKIPPING ${id}: No valid TaxID found."
-        return false
+    species_lst = raw_sequences.map { _id, species, _seq -> [species] }
+        .unique().flatten().collectFile(name: 'species_lst.txt', newLine: true, sort: true)
+    
+    if (params.verbose) {
+    species_lst.subscribe { file ->
+            println "Parsed species names are saved to file: $file\n\n"
+            // println "File content is:\n${file.text}"
+        }
     }
-    TBLASTN(tax_verified_ch, db, gencode, max_target_seqs)
+            
+    PREPARE_TAXONOMY(species_lst, taxdump)
+    parsed_taxonomy = PREPARE_TAXONOMY.out.first()
+
+    TBLASTN(raw_sequences, db, parsed_taxonomy, gencode, max_target_seqs)
     records = TBLASTN.out.filter { id, rec_sp, _rec_rel ->
         if (rec_sp.size() > 0) return true
-        log.warn "SKIPPING ${id}: Species records not found."
+        log.warn "SKIPPING ${id}: Species records not found. (after TBLASTN)"
         return false
     }
     FILTER_AND_EXPORT(records, db)
     
     // Filter missing sequences
-    fasta_verified_ch = FILTER_AND_EXPORT.out.seqs.filter { id, fasta, outgrp_id ->
+    fasta = FILTER_AND_EXPORT.out.seqs.filter { id, fasta, outgrp_id ->
         if (outgrp_id == '') log.warn "Outgroup not found for ${id}. Continue anyway."
         if (fasta != null && fasta.size() > 0) return true
-        log.warn "SKIPPING ${id}: No sequences found."
+        log.warn "SKIPPING ${id}: No sequences found. (after FILTER_AND_EXPORT)"
         return false
     }
 
     emit:
-    nuc_fasta = fasta_verified_ch
+    nuc_multifasta = fasta
+    taxonomy = parsed_taxonomy
 }
 
 workflow {
     main:
-    NEMU_VERSION="1.1.0"
+    NEMU_VERSION="2.0.0"
 
     // help message
     if (params.help) {
@@ -975,10 +1170,13 @@ workflow {
         System.exit(0)
     }
 
+    def inputType = resolveInputType(params.inputType)
+    checkThresholds(params)
+
     // Dependency Checks
     def reqs = ["seqkit", "taxonkit", "tblastn", "blastdbcmd", "mafft", "macse",
                 "goalign", "python3", "java", "run_treeshrink.py", 
-                "nw_reroot", "nw_distance", "nw_prune", "iqtree2", 
+                "nw_reroot", "nw_distance", "nw_prune", "iqtree2", "jq",
                 "collect_mutations.py", "calculate_mutspec.py"]
     
     reqs.each { dep ->
@@ -988,16 +1186,16 @@ workflow {
         }
     }
 
-    if (params.inputType == "protein") {
+    if (inputType == "protein") {
 
         log.info """\
             N E M U   P I P E L I N E  ${NEMU_VERSION}
             ================================
-            input type   : ${params.inputType}
+            input type   : ${inputType}
             input file   : ${params.input}
             blast db     : ${params.db}
             taxdump      : ${params.taxdump}
-            max targets  : ${params.maxTargetSeqs}
+            max hits     : ${params.maxHits}
             gencode      : ${params.gencode}
             MSA mode     : ${params.msaMode}
             IQ-TREE model: ${params.model}
@@ -1006,34 +1204,48 @@ workflow {
             """
             .stripIndent()
 
-        def combined = ["Input file": params.input,
-                        "BLAST database": params.db + ".ndb",
-                        "Taxdump directory": params.taxdump]
-        combined.each { label, path ->
-            if (!path || path == "" || !file(path).exists()) {
-                log.error "${label} path '${path}' is empty or does not exist."
-                System.exit(1)
-            }
+        if (!params.input) {
+            log.error "Input file path is empty or does not exist."
+            System.exit(1)
+        }
+        def db_ok = params.db && (
+            file("${params.db}.ndb").exists() ||
+            file("${params.db}.nin").exists() ||
+            file("${params.db}.nal").exists()
+        )
+        if (!file(params.input).exists()) {
+            log.error "Input file path '${params.input}' is empty or does not exist."
+            System.exit(1)
+        }
+        if (!db_ok) {
+            log.error "BLAST database path '${params.db}' is empty or does not exist (expected ${params.db}.ndb, .nin, or .nal)."
+            System.exit(1)
+        }
+        if (!params.taxdump || !file(params.taxdump).exists()) {
+            log.error "Taxdump directory path '${params.taxdump}' is empty or does not exist."
+            System.exit(1)
         }
         if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
-            log.error "Invalid MSA mode specified. Use --msa_mode with 'auto', 'macse', 'mafft_macse', or 'mafft'."
+            log.error "Invalid MSA mode specified. Set --msaMode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
             System.exit(1)
         }
 
         // Blast + Filter + Extract Nucleotide Sequences
-        fasta_verified_ch = blastHead(
+        blastHead(
             params.input, params.speciesName, 
-            params.taxdump, params.db, params.maxTargetSeqs, 
+            params.taxdump, params.db, params.maxHits, 
             params.gencode
         )
+
+        nuc_multifasta = blastHead.out.nuc_multifasta
+        parsed_taxonomy = blastHead.out.taxonomy
         treefile = ""
 
-    } else if (params.inputType == "nucleotide_coding" || params.inputType == "nucleotide_noncoding") {
-        // TODO rename nucleotide_... to short versions (nuc_cds and nuc_any)
+    } else {
         log.info """\
         N E M U   P I P E L I N E  ${NEMU_VERSION}
         ================================
-        input type   : ${params.inputType}
+        input type   : ${inputType}
         input file   : ${params.input}
         gencode      : ${params.gencode}
         aligned      : ${params.aligned}
@@ -1045,58 +1257,67 @@ workflow {
         .stripIndent()
 
         treefile = params.treefile
+        parsed_taxonomy = channel.empty()
 
-        input_fasta = channel.fromPath(params.input)
+        if (!params.input) {
+            log.error "Input file is required. Set --input."
+            System.exit(1)
+        }
+
+        input_fasta = channel.fromPath(params.input, checkIfExists: true)
             .filter { fasta -> 
-            if (fasta.countFasta() > params.minSeqs) return true
-            log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING."
+            if (fasta.countFasta() >= params.minSeqs) return true
+            log.warn "Input file ${fasta.getName()} has less than ${params.minSeqs} sequences. SKIPPING. (during input validation)"
             return false
         }
         CHECK_INPUT_TYPE(input_fasta)
         input_fasta_nuc = CHECK_INPUT_TYPE.out.filter { 
             fasta, type ->
             if (type == "DNA") return true
-            log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING."
+            log.warn "Input file ${fasta.getName()} does not appear to be DNA sequences. SKIPPING. (after CHECK_INPUT_TYPE)"
             return false
         }.map { fasta, _type -> fasta }
 
-        fasta_verified_ch = input_fasta_nuc.map { file ->
-            def name = file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
+        nuc_multifasta = input_fasta_nuc.map { fasta_file ->
+            def name = fasta_file.getBaseName().replaceAll(/[^a-zA-Z0-9]/, '_')
+            def outgroupId = params.outgroupId
 
-            // Check if the file contains the outgroupId
-            def contains_outgroup = file.text.contains(params.outgroupId)
-            if (!contains_outgroup) {
-                log.warn "Outgroup ID '${params.outgroupId}' not found in the file ${name}. Continue anyway."
+            if (!fastaHasOutgroup(fasta_file, params.outgroupId)) {
+                outgroupId = ""
+                log.warn "Outgroup ID '${params.outgroupId}' not found in FASTA headers of ${name}. This may lead to incorrect rooting of the tree and inaccurate mutation spectra. Continue anyway."
             }
-            [name, file, params.outgroupId]
+            [name, fasta_file, outgroupId]
         }
     }
-    else {
-        log.error "Invalid input type specified. Use --input-type with 'protein', 'nucleotide_coding' or 'nucleotide_noncoding'."
-        System.exit(1)
+
+    // Protein input is unaligned nucleotides from BLAST, so alignment always runs.
+    def aligned = (inputType == "protein") ? false : params.aligned
+
+    // Noncoding sequences have no reading frame, so codon-aware aligners do not apply.
+    def effective_msa_mode = (inputType == "noncds") ? "mafft" : params.msaMode
+    if (effective_msa_mode != params.msaMode) {
+        log.warn "Input type is 'noncds'; overriding --msaMode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
     }
 
-    // in case of protein input, alignment is always needed 
-    def aligned = (params.inputType == "protein") ? false : params.aligned
-
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
-    nemuCore(fasta_verified_ch, params.gencode, 
-             params.minSeqs, aligned, params.msaMode, 
+    nemuCore(nuc_multifasta, params.gencode, 
+             params.minSeqs, aligned, effective_msa_mode, 
              params.model, params.modelAsr, 
-             treefile, params.runTreeShrink,
-             params.probaArg, params.uncertaintyCoef, 
-             params.consCatCutoff,
-             params.plot, params.internal, params.terminal,
-             params.branchSpectra)
+             treefile, params.treeShrink,
+             params.proba, params.phyloCoef,
+             params.rateCutoff,
+             params.plot, params.internalBranches, params.terminalBranches,
+             params.perBranch)
 
     // generate readme
-    WRITE_README()
+    // WRITE_README()
 
     // final outputs aggregation
     spectra_total = nemuCore.out.syn_spectrum.collectFile(
         name: 'spectra_total.tsv', keepHeader: true, skip: 1)
 
     publish:
+    parsed_taxonomy = parsed_taxonomy
     spectra_total = spectra_total
     spectra_data = nemuCore.out.spectra_data
     spectra_plots = nemuCore.out.spectra_plots
@@ -1105,12 +1326,16 @@ workflow {
     encoded_headers = nemuCore.out.encoded_headers
     msa_tree = nemuCore.out.msa_tree
     tree_images = nemuCore.out.tree_images
-    readme = WRITE_README.out
+    // readme = WRITE_README.out
 }
 
 output {
-    spectra_total {}  // TODO move instead of copy
-    readme {}
+    spectra_total { mode 'copy' }
+    parsed_taxonomy {
+        mode 'copy'
+        enabled params.inputType == 'protein'
+    }
+    // readme { mode 'copy' }
     spectra_plots {
         path { sample -> "${sample[0]}/images/" }
     }
