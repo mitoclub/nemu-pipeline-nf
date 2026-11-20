@@ -488,8 +488,15 @@ process BUILD_TREE {
 
     nseq=\$(grep -c '^>' $sequences || true)
     if [ $run_treeshrink = true ] && [ \$nseq -gt 10 ]; then
-        run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM
-        mv treeshrink.treefile treeshrink.nwk
+        # TreeShrink can abort on its own (for example a zero bandwidth on equal branches).
+        # Keep the IQ-TREE tree so this gene is not dropped.
+        if run_treeshrink.py -t ml.treefile -O treeshrink -o . -q $QUANTILE \$OUTGRP_PARAM \
+            && [ -s treeshrink.treefile ]; then
+            mv treeshrink.treefile treeshrink.nwk
+        else
+            echo "WARNING: TreeShrink failed for ${id}; continuing with the unpruned tree" >&2
+            cp ml.treefile treeshrink.nwk
+        fi
     else
         mv ml.treefile treeshrink.nwk
     fi
@@ -677,8 +684,6 @@ process DERIVE_SPECTRA {
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
-    # TODO replace by pure python code
-
     # TODO fix error "After filtration observed 0 mutations" 36__K10914
     
     # Main Calculation
@@ -1295,7 +1300,7 @@ workflow {
              params.perBranch)
 
     // generate readme
-    WRITE_README()
+    // WRITE_README()
 
     // final outputs aggregation
     spectra_total = nemuCore.out.syn_spectrum.collectFile(
@@ -1311,7 +1316,7 @@ workflow {
     encoded_headers = nemuCore.out.encoded_headers
     msa_tree = nemuCore.out.msa_tree
     tree_images = nemuCore.out.tree_images
-    readme = WRITE_README.out
+    // readme = WRITE_README.out
 }
 
 output {
@@ -1320,7 +1325,7 @@ output {
         mode 'copy'
         enabled params.inputType == 'protein'
     }
-    readme { mode 'copy' }
+    // readme { mode 'copy' }
     spectra_plots {
         path { sample -> "${sample[0]}/images/" }
     }

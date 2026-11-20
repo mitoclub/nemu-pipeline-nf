@@ -125,7 +125,7 @@ Parameter names are camelCase (`--inputType`). The defaults below are those in `
 - `--minMuts` — minimum number of mutations required before a spectrum is written (default `5`).
 - `--treefile` — tree file used instead of a de novo search.
 - `--model` and `--modelAsr` — IQ-TREE substitution models (default `GTR+FO+G4+I`).
-- `--treeShrink` — prune long branches with TreeShrink (default `true`).
+- `--treeShrink` — prune long branches with TreeShrink (default `true`). If TreeShrink fails, the unpruned tree is used.
 - `--treeShrinkQuantile` — TreeShrink branch-length quantile (default `0.1`).
 - `--outgroupTopN` — keep the outgroup when its branch is among this many longest branches (default `5`).
 - `--rateCutoff` — exclude sites whose rate category is above this value (`0` keeps every site).
