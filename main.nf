@@ -1210,8 +1210,7 @@ workflow {
         }
         def db_ok = params.db && (
             file("${params.db}.ndb").exists() ||
-            file("${params.db}.nin").exists() ||
-            file("${params.db}.nal").exists()
+            file("${params.db}.nin").exists()
         )
         if (!file(params.input).exists()) {
             log.error "Input file path '${params.input}' is empty or does not exist."
