@@ -115,7 +115,7 @@ Parameter names are camelCase (`--inputType`). The defaults below are those in `
 - `--db` — BLAST database prefix (protein input).
 - `--taxdump` — directory that contains `names.dmp` and `nodes.dmp` (protein input).
 - `--speciesName` — species name or taxid applied to every protein sequence, instead of the FASTA header.
-- `--maxTargetSeqs` — maximum number of `tblastn` hits (default `2000`).
+- `--maxHits` — maximum number of `tblastn` hits per query (default `2000`).
 - `--minIdentSpecies` / `--minCovSpecies` — species BLAST identity, in percent, and query coverage (defaults `80` and `0.5`).
 - `--minIdentOutgroup` / `--minCovOutgroup` — outgroup BLAST identity and coverage (defaults `70` and `0.5`).
 - `--threads` — CPUs requested by each task (default `1`).
@@ -125,20 +125,20 @@ Parameter names are camelCase (`--inputType`). The defaults below are those in `
 - `--minMuts` — minimum number of mutations required before a spectrum is written (default `5`).
 - `--treefile` — tree file used instead of a de novo search.
 - `--model` and `--modelAsr` — IQ-TREE substitution models (default `GTR+FO+G4+I`).
-- `--runTreeShrink` — prune long branches (default `true`).
+- `--treeShrink` — prune long branches with TreeShrink (default `true`).
 - `--treeShrinkQuantile` — TreeShrink branch-length quantile (default `0.1`).
 - `--outgroupTopN` — keep the outgroup when its branch is among this many longest branches (default `5`).
-- `--consCatCutoff` — exclude sites whose rate category is above this value (`0` keeps every site).
-- `--probaArg` — weight mutations by the ancestral-state probability (default `true`).
-- `--probaCutoff` — minimum ancestral-state probability when `--probaArg` is set (default `0.3`).
-- `--uncertaintyCoef` — scale ancestral-state probabilities by node depth (default `true`).
+- `--rateCutoff` — exclude sites whose rate category is above this value (`0` keeps every site).
+- `--proba` — weight mutations by the ancestral-state probability (default `true`).
+- `--minProba` — minimum ancestral-state probability when `--proba` is set (default `0.3`).
+- `--phyloCoef` — downweight mutations on deep branches (default `true`).
 - `--plot` — write spectrum and tree figures (default `true`).
-- `--internal` and `--terminal` — also derive spectra for internal or terminal branches.
-- `--branchSpectra` — also derive one spectrum per branch.
-- `--mnum192` — minimum observations required for each 192-class context (default `16`).
+- `--internalBranches` and `--terminalBranches` — also derive spectra for internal or terminal branches.
+- `--perBranch` — also derive one spectrum per branch.
+- `--minMuts192` — minimum observations required for each 192-class context (default `16`).
 - `--help` — print the in-script help and exit.
 
-For a comparison across species, set `--branchSpectra`, `--model`, `--outgroupId`, and `--consCatCutoff` for that alignment. Include one sequence per species so that within-species polymorphism is not counted as a substitution.
+For a comparison across species, set `--perBranch`, `--model`, `--outgroupId`, and `--rateCutoff` for that alignment. Include one sequence per species so that within-species polymorphism is not counted as a substitution.
 
 Nextflow command-line options: `-o` and `-output-dir`, `-resume`, `-with-report`, `-with-trace`, `-with-timeline`.
 

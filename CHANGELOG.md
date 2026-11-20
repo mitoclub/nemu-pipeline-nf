@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--minIdentSpecies` (default `80`) and `--minCovSpecies` (default `0.5`) set the percent identity and query coverage required for a species BLAST hit. These values were previously fixed.
 - `--minIdentOutgroup` (default `70`) and `--minCovOutgroup` (default `0.5`) set the same cutoffs for the outgroup BLAST hit.
 - `--maxGapSeq` and `--maxGapSite` (default `0.5`) drop sequences or alignment columns whose gap fraction is above that value.
-- `--probaCutoff` (default `0.3`) sets the minimum ancestral-state probability.
+- `--minProba` (default `0.3`) sets the minimum ancestral-state probability. Use `--proba false` to ignore probabilities.
 - `--treeShrinkQuantile` (default `0.1`) sets the TreeShrink branch-length quantile.
-- `--mnum192` (default `16`) sets the minimum observations required for each 192-class context.
+- `--minMuts192` (default `16`) sets the minimum observations required for each 192-class context.
 - `--outgroupTopN` (default `5`) keeps the outgroup when its branch is among this many longest branches.
 - Identity values are percents. Coverage, gap fractions, the probability cutoff, and the TreeShrink quantile are fractions from 0 to 1.
 
@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--inputType` accepts only `protein`, `cds`, and `noncds`.
 - Older names (`prot`, `CDS`, `nucleotide_coding`, `NONCDS`, `nucleotide_noncoding`) stop the run and name the value to use instead.
 - `noncds` still forces MAFFT.
+- Cryptic parameter names from 1.x are renamed: `--maxTargetSeqs` to `--maxHits`, `--runTreeShrink` to `--treeShrink`, `--consCatCutoff` to `--rateCutoff`, `--probaArg` to `--proba`, `--uncertaintyCoef` to `--phyloCoef`, `--internal` to `--internalBranches`, `--terminal` to `--terminalBranches`, and `--branchSpectra` to `--perBranch`.
 
 ### Fixed
 

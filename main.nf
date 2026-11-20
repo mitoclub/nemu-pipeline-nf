@@ -25,7 +25,7 @@ params.taxdump          = ""
 params.inputType        = "cds"                         // protein, cds, noncds
 params.speciesName      = ""                            // Override species name
 params.gencode          = 1
-params.maxTargetSeqs    = 2000
+params.maxHits          = 2000                          // Max tblastn hits per query
 params.minIdentSpecies  = 80                            // tblastn percent identity, species hits
 params.minCovSpecies    = 0.5                           // tblastn query coverage, species hits
 params.minIdentOutgroup = 70                            // tblastn percent identity, outgroup hit
@@ -46,28 +46,28 @@ params.maxGapSite       = 0.5                           // Drop alignment column
 params.treefile         = ""                            // Provide pre-computed tree path to skip tree building
 params.model            = "GTR+FO+G4+I"                 // IQ-TREE Model
 params.modelAsr         = "GTR+FO+G4+I"                 // ASR Model
-params.runTreeShrink    = true                          // Run TreeShrink to prune long branches
+params.treeShrink       = true                          // Prune long branches with TreeShrink
 params.treeShrinkQuantile = 0.1                         // TreeShrink branch-length quantile
 params.outgroupTopN     = 5                             // Keep OUTGRP when it is among this many longest branches
 
 // Mutation Extraction
-params.consCatCutoff    = 0                             // 0 = no cutoff // TODO pass list of categories instead of single value
-params.probaArg         = true                          // Use probabilities  TODO rename???
-params.probaCutoff      = 0.3                           // Minimum ancestral-state probability
-params.uncertaintyCoef  = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
+params.rateCutoff       = 0                             // 0 = no cutoff // TODO pass a list of rate categories
+params.proba            = true                          // Weight mutations by ancestral-state probability
+params.minProba         = 0.3                           // Minimum ancestral-state probability
+params.phyloCoef        = true                          // Downweight deep branches // TODO improve the coefficient
 
 // Spectra Calculation
 params.plot             = true                          // Generate plots
 
 // Subsets of mutations to derive spectra for
-params.internal         = false                         // TODO rename and terminal too
-params.terminal         = false
-params.branchSpectra    = false
+params.internalBranches = false                         // Also derive spectra for internal branches
+params.terminalBranches = false                         // Also derive spectra for terminal branches
+params.perBranch        = false                         // Also derive one spectrum per branch
 
 // Type of spectra that will be aggregated to main output table 'spectra_total.tsv'. Can be 'syn', 'syn4f', 'nonsyn', 'all'
-params.spectraType      = "syn"  // TODO implement
-params.calc192          = true   // TODO implement
-params.mnum192          = 16                            // Minimum observations per 192-class context
+// params.spectraType      = "syn"  // TODO implement
+// params.calc192          = true   // TODO implement
+params.minMuts192       = 16                            // Minimum observations per 192-class context
 
 
 process PREPARE_TAXONOMY {
@@ -621,7 +621,7 @@ process MUT_EXTRACTION {
         ARGS="\$ARGS --rates $rates --cat-cutoff $cons_cat_cutoff"
     fi
     if [ $proba_arg = "true" ]; then
-        ARGS="\$ARGS --proba --pcutoff ${params.probaCutoff}"
+        ARGS="\$ARGS --proba --pcutoff ${params.minProba}"
     fi
     if [ $uncertainty_coef = "true" ]; then
         ARGS="\$ARGS --phylocoef"
@@ -668,12 +668,12 @@ process DERIVE_SPECTRA {
         exit 1
     fi
 
-    ARGS="--exclude OUTGRP,ROOT --mnum192 ${params.mnum192} --syn --syn4f --all --nonsyn"
+    ARGS="--exclude OUTGRP,ROOT --mnum192 ${params.minMuts192} --syn --syn4f --all --nonsyn"
     if [ "$plot" = "true" ]; then
         ARGS="\$ARGS --plot -x png"
     fi
     if [ "$proba_arg" = "true" ]; then
-        ARGS="\$ARGS -p --proba_cutoff ${params.probaCutoff}"
+        ARGS="\$ARGS -p --proba_cutoff ${params.minProba}"
     fi
 
     # TODO replace mean_expected_mutations.tsv with exp_muts if needed
@@ -832,7 +832,7 @@ Main options:
                             amino acid sequences are required (header format: ">ID [Species name/Taxid]"). 
                             If input type is "cds" or "noncds", one or several fasta files 
                             with orthologous sequences (including outgroup) are required
-    --input-type STRING     Type of input sequences: 
+    --inputType STRING      Type of input sequences: 
                             protein, cds, noncds (default: cds)
     --gencode NUM           Genetic code table (default: 1)
                             Used for codon-aware alignment and annotation of mutations
@@ -846,11 +846,11 @@ Nextflow options:
 
 Common options:
     --threads NUM           Number of threads to use (default: 1) TODO update description
-    --save-intermeds BOOL   Save intermediate files TODO implement
+    --saveIntermeds BOOL    Save intermediate files TODO implement
     --help                  Show this help message and exit
 
 Options for nucleotide input:
-    --outgroup-id STRING    Outgroup sequence ID (default: ${params.outgroupId}).
+    --outgroupId STRING     Outgroup sequence ID (default: ${params.outgroupId}).
                             Specify outgroup sequence ID in the alignment for rooting the tree
     --aligned BOOL          Input sequences are pre-aligned (default: ${params.aligned})
 
@@ -858,43 +858,39 @@ Options for protein input:
     --db PATH               BLAST database path (required for protein input)
     --taxdump DIR           Taxdump directory path (required for protein input)
                             TODO integrate to the container
-    --species-name STRING   Override species name. Useful when you work with proteins 
+    --speciesName STRING    Override species name. Useful when you work with proteins 
                             from single species
-    --max-target-seqs NUM   Max target sequences for BLAST (default: ${params.maxTargetSeqs})
-                            tblastn will collect no more than this number of sequences
+    --maxHits NUM           Maximum tblastn hits per query (default: ${params.maxHits})
     --minIdentSpecies NUM   Minimum percent identity for species BLAST hits (default: ${params.minIdentSpecies})
     --minCovSpecies NUM     Minimum query coverage for species BLAST hits (default: ${params.minCovSpecies})
     --minIdentOutgroup NUM  Minimum percent identity for the outgroup BLAST hit (default: ${params.minIdentOutgroup})
     --minCovOutgroup NUM    Minimum query coverage for the outgroup BLAST hit (default: ${params.minCovOutgroup})
     
 Options for MSA & Phylogeny:
-    --msa-mode STRING       MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
+    --msaMode STRING        MSA mode: auto, macse, mafft_macse, mafft (default: ${params.msaMode})
     --maxGapSeq NUM         Drop sequences whose gap fraction is above this value (default: ${params.maxGapSeq})
     --maxGapSite NUM        Drop alignment columns whose gap fraction is above this value (default: ${params.maxGapSite})
-    --min-seqs NUM          Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
-    --min-muts NUM          Minimum reconstructed mutations to derive a spectrum (default: ${params.minMuts})
+    --minSeqs NUM           Minimum number of sequences to proceed phylogenetic inference (default: ${params.minSeqs})
+    --minMuts NUM           Minimum reconstructed mutations to derive a spectrum (default: ${params.minMuts})
     --treefile FILE         Input tree file (optional; default: build tree de novo)
     --model STRING          IQ-TREE substitution model (default: ${params.model})
-    --model-asr STRING      ASR substitution model (default: ${params.modelAsr})
-    --run-treeshrink BOOL   Run TreeShrink to prune long branches (default: ${params.runTreeShrink})
+    --modelAsr STRING       ASR substitution model (default: ${params.modelAsr})
+    --treeShrink BOOL       Prune long branches with TreeShrink (default: ${params.treeShrink})
     --treeShrinkQuantile NUM  TreeShrink branch-length quantile (default: ${params.treeShrinkQuantile})
     --outgroupTopN NUM      Keep the outgroup when its branch is among this many longest branches (default: ${params.outgroupTopN})
 
 Options for Mutation Extraction:
-    --cons-cat-cutoff NUM   Conservation category cutoff for mutation extraction (default: ${params.consCatCutoff})
-                            0 = no cutoff; only mutations in sites with rate category 
-                            less than or equal to this value will be used
-    --proba-arg BOOL        Use probabilities in mutation extraction (default: ${params.probaArg})
-    --probaCutoff NUM       Minimum ancestral-state probability (default: ${params.probaCutoff})
-    --uncertainty-coef BOOL Use phylogeny uncertainty coefficient in mutation extraction 
-                            (default: ${params.uncertaintyCoef})
+    --rateCutoff NUM        Drop sites in a rate category above this value (default: ${params.rateCutoff}; 0 keeps every site)
+    --proba BOOL            Weight mutations by ancestral-state probability (default: ${params.proba})
+    --minProba NUM          Minimum ancestral-state probability (default: ${params.minProba})
+    --phyloCoef BOOL        Downweight mutations on deep branches (default: ${params.phyloCoef})
 
 Options for Mutation Spectra Derivation:
     --plot BOOL             Generate barcharts of mutation spectra (default: ${params.plot})
-    --internal BOOL         Derive spectra for internal branches (default: ${params.internal})
-    --terminal BOOL         Derive spectra for terminal branches (default: ${params.terminal})
-    --branch-spectra BOOL   Derive spectra for individual branches (default: ${params.branchSpectra})
-    --mnum192 NUM           Minimum observations required for each 192-class context (default: ${params.mnum192})
+    --internalBranches BOOL Also derive spectra for internal branches (default: ${params.internalBranches})
+    --terminalBranches BOOL Also derive spectra for terminal branches (default: ${params.terminalBranches})
+    --perBranch BOOL        Also derive one spectrum per branch (default: ${params.perBranch})
+    --minMuts192 NUM        Minimum observations for each 192-class context (default: ${params.minMuts192})
 """.stripIndent()
 }
 
@@ -926,7 +922,7 @@ def checkThresholds(params) {
         minCovOutgroup: params.minCovOutgroup,
         maxGapSeq: params.maxGapSeq,
         maxGapSite: params.maxGapSite,
-        probaCutoff: params.probaCutoff,
+        minProba: params.minProba,
         treeShrinkQuantile: params.treeShrinkQuantile,
     ]
     fraction.each { name, value ->
@@ -948,7 +944,7 @@ def checkThresholds(params) {
         }
     }
     def counts = [
-        mnum192: params.mnum192,
+        minMuts192: params.minMuts192,
         outgroupTopN: params.outgroupTopN,
         minMuts: params.minMuts,
     ]
@@ -1184,7 +1180,7 @@ workflow {
             input file   : ${params.input}
             blast db     : ${params.db}
             taxdump      : ${params.taxdump}
-            max targets  : ${params.maxTargetSeqs}
+            max hits     : ${params.maxHits}
             gencode      : ${params.gencode}
             MSA mode     : ${params.msaMode}
             IQ-TREE model: ${params.model}
@@ -1215,14 +1211,14 @@ workflow {
             System.exit(1)
         }
         if (!params.msaMode || !(params.msaMode in ["auto", "macse", "mafft_macse", "mafft"])) {
-            log.error "Invalid MSA mode specified. Set --msa-mode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
+            log.error "Invalid MSA mode specified. Set --msaMode to 'auto', 'macse', 'mafft_macse', or 'mafft'."
             System.exit(1)
         }
 
         // Blast + Filter + Extract Nucleotide Sequences
         blastHead(
             params.input, params.speciesName, 
-            params.taxdump, params.db, params.maxTargetSeqs, 
+            params.taxdump, params.db, params.maxHits, 
             params.gencode
         )
 
@@ -1285,18 +1281,18 @@ workflow {
     // Noncoding sequences have no reading frame, so codon-aware aligners do not apply.
     def effective_msa_mode = (inputType == "noncds") ? "mafft" : params.msaMode
     if (effective_msa_mode != params.msaMode) {
-        log.warn "Input type is 'noncds'; overriding --msa-mode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
+        log.warn "Input type is 'noncds'; overriding --msaMode '${params.msaMode}' to 'mafft' (codon-aware modes are not supported for noncoding sequences)."
     }
 
     // NEMU Core Workflow: Alignment, Phylogeny, ASR, Mutation Extraction, Spectra Derivation
     nemuCore(nuc_multifasta, params.gencode, 
              params.minSeqs, aligned, effective_msa_mode, 
              params.model, params.modelAsr, 
-             treefile, params.runTreeShrink,
-             params.probaArg, params.uncertaintyCoef, 
-             params.consCatCutoff,
-             params.plot, params.internal, params.terminal,
-             params.branchSpectra)
+             treefile, params.treeShrink,
+             params.proba, params.phyloCoef,
+             params.rateCutoff,
+             params.plot, params.internalBranches, params.terminalBranches,
+             params.perBranch)
 
     // generate readme
     WRITE_README()
