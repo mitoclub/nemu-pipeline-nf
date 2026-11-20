@@ -9,25 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-BLAST identity and coverage, alignment gap fractions, the ancestral-state probability cutoff, the TreeShrink quantile, the 192-class observation minimum, and the outgroup branch rank are parameters. The defaults are the previous fixed values: `--minIdentSpecies 80`, `--minCovSpecies 0.5`, `--minIdentOutgroup 70`, `--minCovOutgroup 0.5`, `--maxGapSeq 0.5`, `--maxGapSite 0.5`, `--probaCutoff 0.3`, `--treeShrinkQuantile 0.1`, `--mnum192 16`, and `--outgroupTopN 5`. Identity values are percents. Coverage, gap fractions, the probability cutoff, and the TreeShrink quantile are fractions from 0 to 1.
+- `--minIdentSpecies` (default `80`) and `--minCovSpecies` (default `0.5`) set the percent identity and query coverage required for a species BLAST hit. These values were previously fixed.
+- `--minIdentOutgroup` (default `70`) and `--minCovOutgroup` (default `0.5`) set the same cutoffs for the outgroup BLAST hit.
+- `--maxGapSeq` and `--maxGapSite` (default `0.5`) drop sequences or alignment columns whose gap fraction is above that value.
+- `--probaCutoff` (default `0.3`) sets the minimum ancestral-state probability.
+- `--treeShrinkQuantile` (default `0.1`) sets the TreeShrink branch-length quantile.
+- `--mnum192` (default `16`) sets the minimum observations required for each 192-class context.
+- `--outgroupTopN` (default `5`) keeps the outgroup when its branch is among this many longest branches.
+- Identity values are percents. Coverage, gap fractions, the probability cutoff, and the TreeShrink quantile are fractions from 0 to 1.
 
 ### Changed
 
-`--inputType` accepts only `protein`, `cds`, and `noncds`. Older names (`prot`, `CDS`, `nucleotide_coding`, `NONCDS`, `nucleotide_noncoding`) stop the run and name the value to use instead. `noncds` still forces MAFFT.
+- `--inputType` accepts only `protein`, `cds`, and `noncds`.
+- Older names (`prot`, `CDS`, `nucleotide_coding`, `NONCDS`, `nucleotide_noncoding`) stop the run and name the value to use instead.
+- `noncds` still forces MAFFT.
 
 ### Fixed
 
-A nucleotide run no longer stops at the start because the taxonomy output is empty. `parsed_taxonomy.txt` is published only for protein input.
+- A nucleotide run no longer stops at the start because the taxonomy output is empty. `parsed_taxonomy.txt` is published only for protein input.
+- The nucleotide outgroup id is matched case-sensitively, both when the header is checked and when that record is renamed. The id or species name has to be passed as it appears in the FASTA header.
+- Deduplication moves the outgroup record to the front and then drops later exact copies of that sequence, so an identical ingroup sequence does not replace it. A reverse complement is kept.
+- A gene that does not produce a synonymous spectrum is left out of `spectra_total.tsv` instead of adding an empty block.
+- `--plot` defaults to true, the same value used in a normal run.
+- `--minMuts` must be a whole number of at least 1, so `0` is rejected at startup rather than letting a header-only observation file through.
+- Writing an ancestral-state table without its two input paths stops with a usage message.
 
 ## [1.2.0] - 2026-09-07
 
 ### Added
 
-`--minMuts` (default 5) sets how many reconstructed mutations a gene needs before a spectrum is derived. The old check compared the observation file’s size in bytes, so real spectra with few mutations were dropped and a large file could pass with almost no mutations.
+- `--minMuts` (default `5`) sets how many reconstructed mutations a gene needs before a spectrum is derived. The old check compared the observation file’s size in bytes, so real spectra with few mutations were dropped and a large file could pass with almost no mutations.
 
 ### Fixed
 
-Outgroup, alignment, and spectrum steps now follow the sequence the run actually claims to use. Nucleotide outgroups are taken from FASTA headers and renamed from that record, including when OUTGRP is not the last sequence and when encoded ids such as `seq_1` and `seq_10` would previously be rewritten together. A missing outgroup is reported and the protein path continues. Coding alignments drop gappy columns in whole codons so the reading frame stays intact, a short outgroup is kept through the length filter, and sequences are uppercased before encoding. A nucleotide `--input` that matches no files fails immediately. The high-N warning reads the N percentage, spectrum calculation receives `--proba` when mutation extraction used probabilities, and a BLAST database is accepted when `.ndb`, `.nin`, or `.nal` is present.
+- Nucleotide outgroups are taken from FASTA headers and renamed from that record, including when OUTGRP is not the last sequence and when encoded ids such as `seq_1` and `seq_10` would previously be rewritten together.
+- A missing outgroup is reported and the protein path continues.
+- Coding alignments drop gappy columns in whole codons so the reading frame stays intact.
+- A short outgroup is kept through the length filter, and sequences are uppercased before encoding.
+- A nucleotide `--input` that matches no files fails immediately.
+- The high-N warning reads the N percentage.
+- Spectrum calculation receives `--proba` when mutation extraction used probabilities.
+- A BLAST database is accepted when `.ndb`, `.nin`, or `.nal` is present.
 
 ## [1.1.0] - 2026-03-11
 

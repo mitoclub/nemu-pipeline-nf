@@ -3,8 +3,10 @@
 
 Records are paired by order between the original FASTA and the encoded FASTA
 (seq_1, seq_2, ...). Matching tries the record id, then whitespace-delimited
-tokens, then a substring of the original header. Prints an empty line when
-nothing matches. Does not assume the outgroup is the last record.
+tokens, then a substring of the original header. The comparison is
+case-sensitive: the id or species name must be passed as it appears in the
+header. Prints an empty line when nothing matches. Does not assume the
+outgroup is the last record.
 """
 
 import sys
@@ -28,8 +30,6 @@ def tokens(header):
 
 
 def match_outgroup(orig_headers, enc_ids, outgroup_id):
-    # One pass. Exact record id still beats an earlier token hit, and a token
-    # hit still beats an earlier substring hit.
     token_hit = ""
     substr_hit = ""
     for enc, orig in zip(enc_ids, orig_headers):

@@ -10,10 +10,12 @@ import sys
 def main():
     try:
         path_to_states, path_to_out = sys.argv[1:]
-    except:
+    except ValueError:
         print(
-            "ERROR\nUSAGE: script.py path_to_states path_to_out_states", file=sys.stderr
+            "ERROR\nUSAGE: script.py path_to_states path_to_out_states",
+            file=sys.stderr,
         )
+        sys.exit(2)
 
     with open(path_to_out, "w") as fout, open(path_to_states) as fin:
         for line in fin:

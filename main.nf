@@ -57,7 +57,7 @@ params.probaCutoff      = 0.3                           // Minimum ancestral-sta
 params.uncertaintyCoef  = true                          // Use phylogeny uncertainty coefficient TODO improve implementation
 
 // Spectra Calculation
-params.plot             = false                         // Generate plots
+params.plot             = true                          // Generate plots
 
 // Subsets of mutations to derive spectra for
 params.internal         = false                         // TODO rename and terminal too
@@ -297,8 +297,16 @@ process ENCODE_AND_RMDUP {
     original_names=\$(seqkit seq -n < ./sequences_upper.fasta)
     paste <(echo "\$codes") <(echo "\$original_names") > encoded_headers.txt
 
-    # Remove duplicates
-    seqkit rmdup -D duplicated.txt -s -w 0 < encoded.fasta > seqs_unique.fasta
+    # seqkit rmdup -s keeps the first copy. The protein path appends the outgroup
+    # last, so move OUTGRP to the front before deduplication.
+    if grep -qE '^>OUTGRP\$' encoded.fasta; then
+        seqkit grep -p 'OUTGRP' encoded.fasta > og.fasta
+        seqkit grep -v -p 'OUTGRP' encoded.fasta > rest.fasta
+        cat og.fasta rest.fasta > encoded_og_first.fasta
+    else
+        cp encoded.fasta encoded_og_first.fasta
+    fi
+    seqkit rmdup -D duplicated.txt -P -s -w 0 < encoded_og_first.fasta > seqs_unique.fasta
     NUM_SEQS=\$(grep -c '^>' ./seqs_unique.fasta || true)
     """
 }
@@ -428,7 +436,14 @@ process MSA {
         echo "WARNING: No sequences left after gap filtering" >> alignment.log
         : > msa.fasta
     else
-        seqkit rmdup -s -w 0 < filtered_seqs.fasta > msa.fasta
+        if grep -qE '^>OUTGRP(\$|[[:space:]])' filtered_seqs.fasta; then
+            seqkit grep -p 'OUTGRP' filtered_seqs.fasta > og.fasta
+            seqkit grep -v -p 'OUTGRP' filtered_seqs.fasta > rest.fasta
+            cat og.fasta rest.fasta > filtered_og_first.fasta
+        else
+            cp filtered_seqs.fasta filtered_og_first.fasta
+        fi
+        seqkit rmdup -P -s -w 0 < filtered_og_first.fasta > msa.fasta
     fi
 
     echo "--- Alignments Stats ---" >> alignment.log
@@ -670,9 +685,8 @@ process DERIVE_SPECTRA {
     calculate_mutspec.py -b $obs_muts -e $exp_freqs -o . \$ARGS
     
     if [ ! -f ms12syn.tsv ]; then
-        # TODO improve filtration quality in the script
-        touch ms12syn_labeled.txt
-        exit 0
+        echo "ERROR: Synonymous spectrum was not written." >&2
+        exit 1
     fi
 
     # Internal
@@ -773,9 +787,10 @@ boolean commandExists(String command) {
 }
 
 boolean fastaHasOutgroup(path, outgroupId) {
+    // Case-sensitive, and the same three checks as match_outgroup.py:
+    // record id, then a header token, then a substring.
     if (!outgroupId) return false
     def og = outgroupId.toString()
-    def ogLower = og.toLowerCase()
     def found = false
     path.text.split('\n').each { line ->
         if (found) return
@@ -783,16 +798,16 @@ boolean fastaHasOutgroup(path, outgroupId) {
             def header = line.substring(1)
             def parts = header.tokenize()
             def hid = parts ? parts[0] : ""
-            if (hid.equalsIgnoreCase(og)) {
+            if (hid == og) {
                 found = true
                 return
             }
             def toks = header.replace('|', ' ').replace(';', ' ').replace(':', ' ').tokenize()
-            if (toks.any { it.equalsIgnoreCase(og) }) {
+            if (toks.any { it == og }) {
                 found = true
                 return
             }
-            if (header.toLowerCase().contains(ogLower)) {
+            if (header.contains(og)) {
                 found = true
             }
         }
@@ -935,6 +950,7 @@ def checkThresholds(params) {
     def counts = [
         mnum192: params.mnum192,
         outgroupTopN: params.outgroupTopN,
+        minMuts: params.minMuts,
     ]
     counts.each { name, value ->
         def number = value.toString().toDouble()

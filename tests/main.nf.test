@@ -90,6 +90,23 @@ nextflow_pipeline {
         }
     }
 
+    test("Should reject minMuts below 1") {
+
+        tag "parameter_validation"
+
+        when {
+            params {
+                inputType = "cds"
+                minMuts = 0
+                help = false
+            }
+        }
+
+        then {
+            assert workflow.failed
+        }
+    }
+
     test("Should fail when nucleotide input path is missing") {
 
         tag "nucleotide_missing_input"
